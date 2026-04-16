@@ -13,7 +13,6 @@ Generates publication-ready AI news reports through a 4-stage pipeline:
 ### Prerequisites
 - Python 3.12+
 - Node.js 18+
-- PostgreSQL (or SQLite for dev)
 
 ### Development
 
@@ -48,9 +47,7 @@ Open http://localhost:3000
 |---|---|---|
 | `OPENAI_API_KEY` | Yes | OpenAI API key for LLM stages 2-4 |
 | `NEWSAPI_KEY` | No | NewsAPI key for expanded data collection |
-| `DATABASE_URL` | No | PostgreSQL URL (defaults to SQLite) |
 
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full technical architecture.  
-See [STRUCTURE.md](STRUCTURE.md) for the complete file tree with origin mapping.
+See the [docs/](docs/) folder for detailed documentation.

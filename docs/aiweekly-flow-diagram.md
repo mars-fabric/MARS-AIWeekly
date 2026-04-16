@@ -41,7 +41,7 @@
 │      2. PhaseClass(config=...)       ── instantiate phase                      │
 │      3. PhaseContext(task, work_dir, shared_state)                              │
 │      4. await phase.execute(ctx)     ── tool calls / LLM pipeline              │
-│      5. Extract output, track cost (CostRecord), update DB                     │
+│      5. Extract output, track cost (in task.json), update task.json     │
 │      6. On all-complete → _generate_cost_summary() → cost_summary.md           │
 │                                                                                 │
 │  _ConsoleCapture ── thread-safe stdout → REST console buffer                   │
@@ -49,12 +49,12 @@
         │                              │
         ▼                              ▼
 ┌────────────────────────┐  ┌─────────────────────────────────────────────────────┐
-│   DATABASE  (SQLite)   │  │   EXTERNAL APIs / LLM                               │
+│  FILE SYSTEM (JSON)    │  │   EXTERNAL APIs / LLM                               │
 │                        │  │                                                     │
-│  Session               │  │   Stage 1: RSS feeds, NewsAPI, GNews, web search    │
-│  WorkflowRun           │  │            (no LLM — direct Python tool calls)      │
-│  TaskStage (×4)        │  │                                                     │
-│  CostRecord            │  │   Stages 2–3: 3 LLM calls per stage                │
+│  ~/Desktop/cmbdir/     │  │   Stage 1: RSS feeds, NewsAPI, GNews, web search    │
+│  aiweekly/{id}/        │  │            (no LLM — direct Python tool calls)      │
+│    task.json           │  │                                                     │
+│    input_files/        │  │   Stages 2–3: 3 LLM calls per stage                │
 │                        │  │     (Primary → Specialist → Reviewer)               │
 │                        │  │   Stage 4: 2 LLM calls (Primary → Reviewer)        │
 │                        │  │     = 8 LLM calls total + refinement (on-demand)    │
@@ -66,7 +66,7 @@
 ## 1. Task Creation Flow
 
 ```
-USER                          FRONTEND                         BACKEND                          DATABASE
+USER                          FRONTEND                         BACKEND                          FILE SYSTEM
  │                               │                               │                                │
  │  Configure date range,        │                               │                                │
  │  topics, sources, style       │                               │                                │
@@ -77,10 +77,10 @@ USER                          FRONTEND                         BACKEND          
  │                               │    topics, sources, style }   │                                │
  │                               ├──────────────────────────────►│                                │
  │                               │                               │  uuid4() → task_id             │
- │                               │                               │  SessionManager.create_session()│
+ │                               │                               │  file_task_store.create_task()  │
  │                               │                               ├───────────────────────────────►│
- │                               │                               │  INSERT Session + WorkflowRun  │
- │                               │                               │  ×4 INSERT TaskStage           │
+ │                               │                               │  Write task.json               │
+ │                               │                               │  (4 stages, status=pending)    │
  │                               │                               ├───────────────────────────────►│
  │                               │                               │                                │
  │                               │  ◄── { task_id, work_dir,     │                                │
@@ -95,11 +95,11 @@ USER                          FRONTEND                         BACKEND          
 ## 2. Stage Execution Flow (Stages 1–4)
 
 ```
-FRONTEND (useAIWeeklyTask)        BACKEND (routers/aiweekly.py)      PHASE ENGINE              DATABASE
+FRONTEND (useAIWeeklyTask)        BACKEND (routers/aiweekly.py)      PHASE ENGINE              FILE SYSTEM
  │                                   │                                │                          │
  │  POST /{id}/stages/{N}/execute    │                                │                          │
  ├──────────────────────────────────►│                                │                          │
- │                                   │  UPDATE TaskStage → "running"  │                          │
+ │                                   │  UPDATE task.json → "running"  │                          │
  │                                   │  asyncio.create_task(          │                          │
  │                                   │    _run_aiweekly_stage(...))   │                          │
  │  ◄── { status: "started" }        │  ┌───────────────────────────►│                          │
@@ -111,11 +111,11 @@ FRONTEND (useAIWeeklyTask)        BACKEND (routers/aiweekly.py)      PHASE ENGIN
  │                                   │  │     [PHASE PIPELINE]        │                          │
  │  ◄── console lines (polling)      │  │                             │                          │
  │◄──────────────────────────────────┤  │  5. Extract cost            │                          │
- │                                   │  │  6. INSERT CostRecord       │                          │
- │                                   │  │  7. UPDATE TaskStage →      │                          │
+ │                                   │  │  6. Cost saved in task.json │                          │
+ │                                   │  │  7. UPDATE task.json →       │                          │
  │                                   │  │     "completed" + output    │                          │
  │                                   │  │  8. If ALL done → complete  │                          │
- │  Poll detects stage complete      │  │     WorkflowRun + cost file │                          │
+ │  Poll detects stage complete      │  │     task + cost_summary.md  │                          │
  │  GET /{id}/stages/{N}/content     │  └─────────────────────────────┘                          │
  │  Display in editor panel          │                                │                          │
 ```
@@ -170,16 +170,16 @@ Stage 1 → raw_collection
 Stage 2 reads {raw_collection, task_config} → curated_items
 Stage 3 reads {raw_collection, curated_items, task_config} → draft_report
 Stage 4 reads {all prior + task_config} → final_report
-ALL done → WorkflowRun "completed" + cost_summary.md
+ALL done → task status "completed" + cost_summary.md
 ```
 
 ---
 
-## 6. Database Entity Relationship
+## 6. Data Storage
 
 ```
-Session 1:N → WorkflowRun 1:N → TaskStage (×4)
-                          1:N → CostRecord
+task.json contains: task metadata + 4 stages (with output_data and cost)
+Cost data embedded in each stage's output_data["cost"]
 ```
 
 ---

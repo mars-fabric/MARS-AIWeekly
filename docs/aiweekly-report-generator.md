@@ -50,20 +50,20 @@ The app runs as a **single-page application** (SPA) — all navigation happens v
 | **Token-safe** | Every LLM call uses `chunk_prompt_if_needed` with 0.75 safety margin |
 | **Dynamic model** | Model resolved from config; user can override per-stage via UI |
 | **Multi-agent** | Stages 2–3 use 3-agent pipeline. Stage 4 uses generate + review only |
-| **Auto-completing** | `WorkflowRun.status` transitions to `"completed"` when all stages finish |
+| **Auto-completing** | Task status transitions to `"completed"` when all stages finish |
 | **Cost-transparent** | Per-stage cost tracking with aggregated USD totals |
-| **Resumable** | Tasks persist in SQLite and can resume after browser reload |
+| **Resumable** | Tasks persist as JSON files and can resume after browser reload |
 
 ### 1.4 Technology Stack
 
 | Layer | Technology |
 |---|---|
-| **Backend** | Python, FastAPI, SQLAlchemy, asyncio |
+| **Backend** | Python, FastAPI, asyncio |
 | **Phase System** | `AIWeeklyPhaseBase` → 4 phase subclasses |
 | **Data Collection** | `news_tools.py` — RSS feeds, NewsAPI, GNews, web search |
 | **Frontend** | React, TypeScript, Next.js (SPA) |
 | **Real-time** | REST polling (console output) |
-| **Database** | SQLite via SQLAlchemy ORM |
+| **Storage** | JSON files (`task.json` per task in `~/Desktop/cmbdir/aiweekly/`) |
 
 ---
 
@@ -154,13 +154,12 @@ All transitions happen via React state — no page reloads.
 
 ## 4. Outcomes — Saved and Processed
 
-### Database (SQLAlchemy)
+### File System (JSON)
 
-- **`WorkflowRun`** — one row per task, `mode="aiweekly"`
-- **`TaskStage`** — one row per stage (4 per task)
-- **`CostRecord`** — one per stage execution
+- **`task.json`** — one file per task, contains all metadata, stage statuses, and output data
+- Cost data embedded in each stage's `output_data["cost"]`
 
-### File System
+### Output Files
 
 Files saved in `~/Desktop/cmbdir/aiweekly/{task_id[:8]}/input_files/`:
 
