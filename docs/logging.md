@@ -38,7 +38,7 @@ Key exports:
 | `LOG_LEVEL` | `"INFO"` | Minimum log level |
 | `LOG_JSON` | `"false"` | JSON-formatted output |
 | `LOG_FILE` | `"{work_dir}/logs/backend.log"` | Backend log file path |
-| `CMBAGENT_DATABASE_URL` | `"sqlite:///{work_dir}/database/cmbagent.db"` | Database URL |
+| `CMBAGENT_DATABASE_URL` | — | Not used (file-based storage) |
 
 ### Logger Usage
 

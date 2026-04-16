@@ -9,9 +9,9 @@
 The AI Weekly app uses a simplified session management system focused on task persistence and resumption. Unlike a multi-mode workflow platform, the session layer here serves a single purpose: **persist AI Weekly tasks so they survive browser reloads and can be resumed**.
 
 Key capabilities:
-- **Task persistence:** Tasks stored in SQLite via SQLAlchemy
+- **Task persistence:** Tasks stored as JSON files in `~/Desktop/cmbdir/aiweekly/`
 - **Resumable:** Incomplete tasks appear in the right-panel "Recent Tasks" dropdown
-- **Cost tracking:** Per-task resource usage via CostRecord
+- **Cost tracking:** Per-stage cost tracked in task.json output_data
 - **Auto-cleanup:** Completed tasks auto-transition and are removed from the recent list
 
 ---
@@ -28,6 +28,7 @@ backend/
 │   ├── health.py              # Health check endpoint
 │   └── models.py              # Model configuration endpoints
 ├── services/
+│   ├── file_task_store.py     # JSON file-based task/stage persistence
 │   ├── session_manager.py     # Session lifecycle management
 │   ├── connection_manager.py  # WebSocket connection management
 │   ├── workflow_service.py    # Workflow execution service
@@ -97,19 +98,22 @@ mars-ui/
 
 ---
 
-## Session Manager
+## Task Persistence
 
-**File:** `backend/services/session_manager.py`
+**File:** `backend/services/file_task_store.py`
 
-The `SessionManager` handles session creation for AI Weekly tasks.
+The `file_task_store` module handles all task data persistence using JSON files stored under `~/Desktop/cmbdir/aiweekly/`.
 
-### Key Methods
+### Key Functions
 
-| Method | Purpose |
+| Function | Purpose |
 |---|---|
-| `create_session(mode, config)` | Create session for a new task |
-| `list_sessions(status, limit)` | List sessions with filters |
-| `delete_session(session_id)` | Soft-delete session |
+| `create_task(task_id, work_dir, ...)` | Create task with stage definitions |
+| `get_task(task_id)` | Load task data by scanning directories |
+| `update_task(task_id, updates)` | Update top-level task fields |
+| `update_stage(task_id, stage_num, updates)` | Update a specific stage |
+| `list_recent_tasks(limit)` | List recent tasks for resume flow |
+| `delete_task(task_id)` | Delete task directory and all files |
 
 ### Task-Specific Endpoints
 
@@ -161,52 +165,51 @@ Key points:
 
 ---
 
-## Database Schema
+## Data Storage
 
-### WorkflowRun
+### File Structure
 
-```sql
-CREATE TABLE workflow_runs (
-    id TEXT PRIMARY KEY,           -- task_id (UUID)
-    session_id TEXT,               -- FK → sessions.id
-    mode TEXT DEFAULT 'aiweekly',
-    agent TEXT DEFAULT 'phase_orchestrator',
-    status TEXT DEFAULT 'executing',
-    task_description TEXT,
-    meta JSON,                     -- {work_dir, task_config, orchestration}
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP
-);
+Each task is stored in its own directory under `~/Desktop/cmbdir/aiweekly/`:
+
+```
+~/Desktop/cmbdir/aiweekly/
+├── {task_id[:8]}/
+│   ├── task.json                  # Complete task state + all stage data
+│   └── input_files/
+│       ├── task_config.json       # User configuration
+│       ├── collection.md          # Stage 1 output
+│       ├── curated.md             # Stage 2 output
+│       ├── report_draft.md        # Stage 3 output
+│       ├── report_final.md        # Stage 4 output
+│       └── cost_summary.md        # Auto-generated on completion
 ```
 
-### TaskStage
+### task.json Schema
 
-```sql
-CREATE TABLE task_stages (
-    id TEXT PRIMARY KEY,
-    parent_run_id TEXT,            -- FK → workflow_runs.id
-    stage_number INTEGER,          -- 1–4
-    stage_name TEXT,               -- data_collection, content_curation, etc.
-    status TEXT DEFAULT 'pending', -- pending, running, completed, failed
-    output_data JSON,             -- {shared: {key: content}, cost: {tokens}}
-    error_message TEXT
-);
-```
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Task UUID |
+| `status` | string | `executing`, `completed`, `failed` |
+| `task_description` | string | Human-readable description |
+| `mode` | string | Always `"aiweekly"` |
+| `model` | string | Default LLM model |
+| `work_dir` | string | Absolute path to task directory |
+| `task_config` | object | `{date_from, date_to, topics, sources, style}` |
+| `created_at` | string | ISO timestamp |
+| `completed_at` | string | ISO timestamp or null |
+| `stages` | array | Array of 4 stage objects |
 
-### CostRecord
+### Stage Object
 
-```sql
-CREATE TABLE cost_records (
-    id TEXT PRIMARY KEY,
-    run_id TEXT,                   -- FK → workflow_runs.id
-    model TEXT,
-    prompt_tokens INTEGER,
-    completion_tokens INTEGER,
-    total_tokens INTEGER,
-    cost_usd REAL,
-    timestamp TIMESTAMP
-);
-```
+| Field | Type | Description |
+|---|---|---|
+| `stage_number` | int | 1–4 |
+| `stage_name` | string | `data_collection`, `content_curation`, etc. |
+| `status` | string | `pending`, `running`, `completed`, `failed` |
+| `output_data` | object | `{"shared": {"<key>": "content"}, "cost": {...}}` |
+| `error_message` | string | Error details if failed |
+| `started_at` | string | ISO timestamp |
+| `completed_at` | string | ISO timestamp |
 
 ---
 
@@ -218,7 +221,6 @@ CREATE TABLE cost_records (
 |---|---|---|---|
 | `OPENAI_API_KEY` | Yes | — | OpenAI API key for LLM stages 2–4 |
 | `NEWSAPI_KEY` | No | — | NewsAPI key for expanded data collection |
-| `DATABASE_URL` | No | SQLite | PostgreSQL URL |
 | `CMBAGENT_DEFAULT_WORK_DIR` | No | `~/Desktop/cmbdir` | Root data directory |
 | `LOG_LEVEL` | No | `INFO` | Logging level |
 

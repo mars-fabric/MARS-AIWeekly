@@ -33,11 +33,12 @@ The AI Weekly Report Generator is a **standalone, 4-stage, human-in-the-loop AI 
 Stage 1 uses **direct Python tool calls** (no LLM). Stages 2–4 use a **3-agent LLM pipeline** (Primary → Specialist → Reviewer) via `AIWeeklyPhaseBase`.
 
 **Key technologies:**
-- **Backend:** Python, FastAPI, SQLAlchemy, asyncio
+- **Backend:** Python, FastAPI, asyncio
 - **Phase System:** `AIWeeklyPhaseBase` → 4 phase subclasses
 - **Data Collection:** `news_tools.py` — direct page scraping, RSS feeds, NewsAPI, GNews, DDG/Bing/Yahoo/Brave; 26 curated sources
 - **Frontend:** React, TypeScript, Next.js (single-page app)
 - **Real-time:** REST polling (console output)
+- **Storage:** JSON file-based (`task.json` per task in `~/Desktop/cmbdir/aiweekly/`)
 - **Default LLM:** Dynamic from `WorkflowConfig.default_llm_model`; per-stage override via UI
 - **Mode:** `"aiweekly"`
 
@@ -70,7 +71,7 @@ Stage 1 uses **direct Python tool calls** (no LLM). Stages 2–4 use a **3-agent
 │      2. PhaseClass(config=...)                                         │
 │      3. PhaseContext(task, work_dir, shared_state)                     │
 │      4. await phase.execute(ctx)                                       │
-│      5. Extract output, track cost, update DB                          │
+│      5. Extract output, track cost, update task.json            │
 │      6. On all-complete → _generate_cost_summary() → cost_summary.md │
 │                                                                       │
 │  _ConsoleCapture ── thread-safe stdout/stderr → REST console buffer   │
@@ -78,13 +79,13 @@ Stage 1 uses **direct Python tool calls** (no LLM). Stages 2–4 use a **3-agent
             │                              │
             ▼                              ▼
 ┌────────────────────────┐    ┌─────────────────────────────────────────┐
-│   SQLite (SQLAlchemy)  │    │       cmbagent/phases/aiweekly/           │
+│  File System (JSON)    │    │       cmbagent/phases/aiweekly/           │
 │                        │    │                                         │
-│  WorkflowRun (task)    │    │  collection_phase.py  (Stage 1, no LLM)│
-│  TaskStage   (×4)      │    │  curation_phase.py    (Stage 2, LLM)   │
-│  CostRecord            │    │  generation_phase.py  (Stage 3, LLM)   │
-│  output_data.shared    │    │  review_phase.py      (Stage 4, LLM)   │
-└────────────────────────┘    │  base.py              (shared base)     │
+│  task.json (per task)  │    │  collection_phase.py  (Stage 1, no LLM)│
+│  Stages + output_data  │    │  curation_phase.py    (Stage 2, LLM)   │
+│  Cost in output_data   │    │  generation_phase.py  (Stage 3, LLM)   │
+└────────────────────────┘    │  review_phase.py      (Stage 4, LLM)   │
+                              │  base.py              (shared base)     │
                               └─────────────────────────────────────────┘
 ```
 
@@ -96,7 +97,10 @@ Stage 1 uses **direct Python tool calls** (no LLM). Stages 2–4 use a **3-agent
 backend/
   models/aiweekly_schemas.py   # Pydantic request/response models
   routers/aiweekly.py          # 13 REST endpoints
-  services/                    # session_manager, connection_manager, etc.
+  services/
+    file_task_store.py         # JSON file-based task/stage persistence
+    session_manager.py         # Session lifecycle (legacy)
+    connection_manager.py      # WebSocket connections
   core/                        # app factory, config, logging
 
 mars-ui/
@@ -211,7 +215,7 @@ All endpoints prefixed with `/api/aiweekly`.
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/create` | Create task + 4 stage DB rows |
+| POST | `/create` | Create task + 4 stages in task.json |
 | POST | `/{id}/stages/{N}/execute` | Launch async stage execution |
 | GET | `/{id}` | Full task state (all stages) |
 | GET | `/{id}/stages/{N}/content` | Stage output markdown |
@@ -227,26 +231,26 @@ All endpoints prefixed with `/api/aiweekly`.
 
 ---
 
-## 8. Database Layer
+## 8. Data Storage
 
-### WorkflowRun
+All task data is stored as JSON files on the file system. No database is required.
 
-| Column | Value |
+### task.json (one per task)
+
+| Field | Value |
 |---|---|
 | `mode` | `"aiweekly"` |
-| `agent` | `"phase_orchestrator"` |
 | `status` | `"executing"` → `"completed"` / `"failed"` |
-| `meta.work_dir` | `~/Desktop/cmbdir/aiweekly/<id[:8]>` |
-| `meta.task_config` | `{date_from, date_to, topics, sources, style}` |
+| `work_dir` | `~/Desktop/cmbdir/aiweekly/<id[:8]>` |
+| `task_config` | `{date_from, date_to, topics, sources, style}` |
 
-### TaskStage (4 per task)
+### Stage Data (4 stages per task, embedded in task.json)
 
-| Column | Description |
+| Field | Description |
 |---|---|
-| `parent_run_id` | → WorkflowRun.id |
 | `stage_number` | 1–4 |
 | `status` | `pending` → `running` → `completed` / `failed` |
-| `output_data` | `{"shared": {"<key>": "markdown content"}}` |
+| `output_data` | `{"shared": {"<key>": "markdown content"}, "cost": {...}}` |
 
 ---
 
@@ -348,11 +352,11 @@ Every LLM call in Stages 2–4 uses `chunk_prompt_if_needed()`:
 
 ## 14. Cost Tracking
 
-Each LLM call's token usage is tracked per-stage and recorded to the database via `CostRepository`.
+Each LLM call's token usage is tracked per-stage in the `output_data["cost"]` field of task.json.
 
 - Stages 2–4 return token counts in `output_data["cost"]`
 - Cost formula: `cost_usd = (prompt_tokens × 0.002 + completion_tokens × 0.008) / 1000`
-- When all 4 stages complete, `cost_summary.md` is auto-generated
+- When all 4 stages complete, `cost_summary.md` is auto-generated in the work directory
 
 ---
 
@@ -383,4 +387,4 @@ Each LLM call's token usage is tracked per-stage and recorded to the database vi
 
 ## 17. Workflow Run Auto-Completion
 
-When the last stage completes, `_run_aiweekly_stage()` automatically checks all `TaskStage` rows. If all 4 are `"completed"`, the parent `WorkflowRun` transitions to `"completed"` with a timestamp. Completed tasks no longer appear in `GET /api/aiweekly/recent`.
+When the last stage completes, `_run_aiweekly_stage()` reloads the task from task.json and checks all stages. If all 4 are `"completed"`, the task status transitions to `"completed"` with a timestamp. Completed tasks still appear in `GET /api/aiweekly/recent` (the UI filters by status).
