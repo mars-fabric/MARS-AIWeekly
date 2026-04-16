@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+version = "0.1.0"
+name = "mars-aiweekly"
+description = "Standalone AI Weekly Report Generator — extracted from Mars"
+readme = {file = "README.md", content-type = "text/markdown"}
+requires-python = ">=3.12"
+license = "Apache-2.0"
+
+dependencies = [
+    # cmbagent
+    "mars-cmbagent",
+
+    # Backend framework
+    "fastapi>=0.104.1",
+    "uvicorn[standard]>=0.24.0",
+    "websockets>=12.0",
+    "python-multipart>=0.0.6",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.7.4",
+    "aiohttp>=3.9.0",
+    "structlog",
+
+    # Database
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg2-binary>=2.9",
+    "markdown",
+]
+
+[project.optional-dependencies]
+data = [
+    "scipy",
+    "matplotlib",
+    "xgboost",
+]
+jupyter = [
+    "jupyter",
+    "ipykernel",
+]
+
+[tool.setuptools.packages.find]
+include = ["backend*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

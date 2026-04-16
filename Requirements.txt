@@ -1,0 +1,22 @@
+mars-cmbagent
+fastapi>=0.104.1
+uvicorn[standard]>=0.24.0
+websockets>=12.0
+python-multipart>=0.0.6
+python-dotenv>=1.0.0
+pydantic>=2.7.4
+aiohttp>=3.9.0
+structlog
+sqlalchemy>=2.0
+alembic>=1.13
+psycopg2-binary>=2.9
+markdown
+
+# Optional: data
+scipy
+matplotlib
+xgboost
+
+# Optional: jupyter
+jupyter
+ipykernel
