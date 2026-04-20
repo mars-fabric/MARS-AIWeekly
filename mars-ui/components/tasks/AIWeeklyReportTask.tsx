@@ -90,68 +90,70 @@ export default function AIWeeklyReportTask({ onBack, resumeTaskId }: AIAIWeeklyR
     }, [currentStep, resetFromStage])
 
     return (
-        <div className="p-6 max-w-7xl mx-auto">
-            {/* Header */}
-            <div className="flex items-center gap-3 mb-6">
-                <div>
-                    <h2 className="text-2xl font-semibold" style={{ color: 'var(--mars-color-text)' }}>
-                        AI Weekly Report
-                    </h2>
-                    <p className="text-sm mt-0.5" style={{ color: 'var(--mars-color-text-secondary)' }}>
-                        Generate a publication-ready weekly AI report through 4 interactive stages
-                    </p>
+        <div className="h-full flex flex-col overflow-hidden">
+            <div className="flex-shrink-0 px-6 pt-6">
+                {/* Header */}
+                <div className="flex items-center gap-3 mb-6">
+                    <div>
+                        <h2 className="text-2xl font-semibold" style={{ color: 'var(--mars-color-text)' }}>
+                            AI Weekly Report
+                        </h2>
+                        <p className="text-sm mt-0.5" style={{ color: 'var(--mars-color-text-secondary)' }}>
+                            Generate a publication-ready weekly AI report through 4 interactive stages
+                        </p>
+                    </div>
+                    {taskState?.total_cost_usd != null && taskState.total_cost_usd > 0 && (
+                        <div
+                            className="ml-auto text-xs px-3 py-1.5 rounded-mars-md"
+                            style={{
+                                backgroundColor: 'var(--mars-color-surface-overlay)',
+                                color: 'var(--mars-color-text-secondary)',
+                            }}
+                        >
+                            Cost: ${taskState.total_cost_usd.toFixed(4)}
+                        </div>
+                    )}
+                    {taskId && (
+                        <div className={`flex items-center gap-2 ${taskState?.total_cost_usd ? '' : 'ml-auto'}`}>
+                            <Button onClick={handleDelete} variant="secondary" size="sm" disabled={isExecuting}>
+                                <Trash2 className="w-3.5 h-3.5 mr-1" />Delete
+                            </Button>
+                        </div>
+                    )}
                 </div>
-                {taskState?.total_cost_usd != null && taskState.total_cost_usd > 0 && (
-                    <div
-                        className="ml-auto text-xs px-3 py-1.5 rounded-mars-md"
-                        style={{
-                            backgroundColor: 'var(--mars-color-surface-overlay)',
-                            color: 'var(--mars-color-text-secondary)',
-                        }}
-                    >
-                        Cost: ${taskState.total_cost_usd.toFixed(4)}
+
+                {/* Error banner */}
+                {error && (
+                    <div className="mb-4 p-3 rounded-mars-md flex items-center justify-between text-sm"
+                        style={{ backgroundColor: 'var(--mars-color-danger-subtle)', color: 'var(--mars-color-danger)', border: '1px solid var(--mars-color-danger)' }}>
+                        <span>{error}</span>
+                        <button onClick={clearError} className="ml-2 font-medium underline">Dismiss</button>
                     </div>
                 )}
-                {taskId && (
-                    <div className={`flex items-center gap-2 ${taskState?.total_cost_usd ? '' : 'ml-auto'}`}>
-                        <Button onClick={handleDelete} variant="secondary" size="sm" disabled={isExecuting}>
-                            <Trash2 className="w-3.5 h-3.5 mr-1" />Delete
-                        </Button>
+
+                {/* Stepper */}
+                <div className="mb-8">
+                    <Stepper steps={stepperSteps} orientation="horizontal" size="sm" onStepClick={taskId ? handleStepClick : undefined} />
+                </div>
+
+                {/* Reset banner */}
+                {hasLaterCompletedStages() && !isExecuting && (
+                    <div className="mb-4 p-3 rounded-mars-md flex items-center justify-between text-sm"
+                        style={{ backgroundColor: 'var(--mars-color-warning-subtle, rgba(245,158,11,0.1))', border: '1px solid var(--mars-color-warning, #f59e0b)', color: 'var(--mars-color-text)' }}>
+                        <span style={{ color: 'var(--mars-color-text-secondary)' }}>
+                            Stages after this one have been completed. You can reset them to re-run.
+                        </span>
+                        <button onClick={handleResetFromHere}
+                            className="ml-3 flex items-center gap-1.5 px-3 py-1.5 rounded-mars-sm text-xs font-medium transition-colors"
+                            style={{ backgroundColor: 'var(--mars-color-warning, #f59e0b)', color: '#fff' }}>
+                            <RotateCcw className="w-3.5 h-3.5" />Reset Later Stages
+                        </button>
                     </div>
                 )}
+
             </div>
-
-            {/* Error banner */}
-            {error && (
-                <div className="mb-4 p-3 rounded-mars-md flex items-center justify-between text-sm"
-                    style={{ backgroundColor: 'var(--mars-color-danger-subtle)', color: 'var(--mars-color-danger)', border: '1px solid var(--mars-color-danger)' }}>
-                    <span>{error}</span>
-                    <button onClick={clearError} className="ml-2 font-medium underline">Dismiss</button>
-                </div>
-            )}
-
-            {/* Stepper */}
-            <div className="mb-8">
-                <Stepper steps={stepperSteps} orientation="horizontal" size="sm" onStepClick={taskId ? handleStepClick : undefined} />
-            </div>
-
-            {/* Reset banner */}
-            {hasLaterCompletedStages() && !isExecuting && (
-                <div className="mb-4 p-3 rounded-mars-md flex items-center justify-between text-sm"
-                    style={{ backgroundColor: 'var(--mars-color-warning-subtle, rgba(245,158,11,0.1))', border: '1px solid var(--mars-color-warning, #f59e0b)', color: 'var(--mars-color-text)' }}>
-                    <span style={{ color: 'var(--mars-color-text-secondary)' }}>
-                        Stages after this one have been completed. You can reset them to re-run.
-                    </span>
-                    <button onClick={handleResetFromHere}
-                        className="ml-3 flex items-center gap-1.5 px-3 py-1.5 rounded-mars-sm text-xs font-medium transition-colors"
-                        style={{ backgroundColor: 'var(--mars-color-warning, #f59e0b)', color: '#fff' }}>
-                        <RotateCcw className="w-3.5 h-3.5" />Reset Later Stages
-                    </button>
-                </div>
-            )}
-
             {/* Panel content */}
-            <div>
+            <div className="flex-1 min-h-0 overflow-auto px-6 pb-6">
                 {currentStep === 0 && (
                     <AIWeeklySetupPanel hook={hook} onNext={goNext} />
                 )}

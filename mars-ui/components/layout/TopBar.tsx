@@ -16,8 +16,8 @@ export default function TopBar() {
       role="banner"
     >
       <div
-        className="flex items-center justify-between px-4 w-full"
-        style={{ height: '48px' }}
+        className="flex items-center justify-between px-6 w-full"
+        style={{ height: '64px' }}
       >
         {/* Left: App name + subtitle */}
         <div className="flex items-center gap-3">
@@ -51,8 +51,8 @@ export default function TopBar() {
           >
             {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
           </button>
-          <a
-            href="/"
+          <button
+            onClick={() => window.dispatchEvent(new CustomEvent('mars:new-session'))}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors"
             style={{
               backgroundColor: 'var(--mars-color-primary)',
@@ -61,7 +61,7 @@ export default function TopBar() {
           >
             <Plus className="w-3.5 h-3.5" />
             New Session
-          </a>
+          </button>
         </div>
       </div>
     </header>
