@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 
 from models.aiweekly_schemas import (
@@ -383,6 +383,7 @@ async def create_aiweekly_task(request: AIWeeklyCreateRequest):
         "topics": request.topics,
         "sources": request.sources,
         "style": request.style,
+        "custom_sources": request.custom_sources or [],
     }
 
     create_task(
@@ -415,6 +416,40 @@ async def create_aiweekly_task(request: AIWeeklyCreateRequest):
         work_dir=work_dir,
         stages=stages_out,
     )
+
+
+ALLOWED_UPLOAD_EXTENSIONS = {".csv", ".pdf", ".txt", ".md", ".json", ".xml", ".html"}
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+@router.post("/{task_id}/upload")
+async def upload_data_source(task_id: str, file: UploadFile = File(...)):
+    """Upload a file as a custom data source for the task."""
+    from services.file_task_store import get_task_or_404
+
+    task_data = get_task_or_404(task_id)
+    work_dir = task_data.get("work_dir", "")
+
+    if not file.filename:
+        raise HTTPException(400, "No filename provided")
+
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        raise HTTPException(400, f"File type {ext} not allowed. Allowed: {', '.join(ALLOWED_UPLOAD_EXTENSIONS)}")
+
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(400, f"File too large. Max size: {MAX_UPLOAD_SIZE // (1024 * 1024)} MB")
+
+    uploads_dir = os.path.join(work_dir, "input_files", "uploads")
+    os.makedirs(uploads_dir, exist_ok=True)
+
+    safe_name = os.path.basename(file.filename)
+    save_path = os.path.join(uploads_dir, safe_name)
+    with open(save_path, "wb") as f:
+        f.write(content)
+
+    return {"filename": safe_name, "size": len(content), "path": save_path}
 
 
 @router.post("/{task_id}/stages/{stage_num}/execute")

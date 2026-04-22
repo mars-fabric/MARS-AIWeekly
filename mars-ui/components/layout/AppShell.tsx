@@ -2,6 +2,7 @@
 
 import { ReactNode } from 'react'
 import TopBar from './TopBar'
+import FooterBar from './FooterBar'
 
 interface AppShellProps {
   children: ReactNode
@@ -28,6 +29,8 @@ export default function AppShell({ children }: AppShellProps) {
           {children}
         </main>
       </div>
+
+      <FooterBar />
 
       {/* Live region for screen reader announcements */}
       <div aria-live="polite" aria-atomic="true" className="mars-live-region" id="mars-live-announcements" />

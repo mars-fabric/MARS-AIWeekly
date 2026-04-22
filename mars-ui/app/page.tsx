@@ -1,8 +1,7 @@
 'use client'
 
-import { Suspense, useState, useEffect, useCallback, useMemo } from 'react'
-import { useSearchParams } from 'next/navigation'
-import { Newspaper, Play, CheckCircle2, AlertCircle, Search, X, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Newspaper, Play, CheckCircle2, AlertCircle, Search, X, ChevronLeft, ChevronRight, Loader2, Sparkles, Upload, Layers, FileText } from 'lucide-react'
 import AIWeeklyReportTask from '@/components/tasks/AIWeeklyReportTask'
 import { getApiUrl } from '@/lib/config'
 
@@ -60,25 +59,78 @@ function StatusIcon({ status }: { status: string }) {
           }
 }
 
-function ResumeParam({ onResume }: { onResume: (id: string) => void }) {
-          const searchParams = useSearchParams()
-          const resumeFromUrl = searchParams.get('resume')
-          useEffect(() => {
-                    if (resumeFromUrl) onResume(resumeFromUrl)
-          }, [resumeFromUrl, onResume])
-          return null
+/* ---------- Hero Landing Page ---------- */
+function HeroLanding({ onStart }: { onStart: () => void }) {
+          return (
+                    <div className="flex-1 flex flex-col items-center justify-center px-6 py-16 select-none">
+                              {/* Icon */}
+                              <div
+                                        className="w-20 h-20 rounded-2xl flex items-center justify-center mb-6"
+                                        style={{
+                                                  background: 'linear-gradient(135deg, #6366f1, #7c3aed)',
+                                                  boxShadow: '0 0 40px rgba(99,102,241,0.35)',
+                                        }}
+                              >
+                                        <Sparkles className="w-9 h-9 text-white" />
+                              </div>
+
+                              {/* Title */}
+                              <h2 className="text-3xl font-bold tracking-tight mb-2"
+                                        style={{ color: 'var(--mars-color-text)' }}>
+                                        AI Weekly
+                              </h2>
+
+                              {/* Tagline */}
+                              <p className="text-sm max-w-md text-center mb-8"
+                                        style={{ color: 'var(--mars-color-text-tertiary)' }}>
+                                        Generate comprehensive AI weekly reports through an automated multi-stage pipeline
+                              </p>
+
+                              {/* CTA Button */}
+                              <button
+                                        onClick={onStart}
+                                        className="flex items-center gap-2 px-6 py-3 rounded-lg text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-[0.98]"
+                                        style={{
+                                                  background: 'linear-gradient(135deg, #6366f1, #7c3aed)',
+                                                  boxShadow: '0 4px 20px rgba(99,102,241,0.3)',
+                                        }}
+                              >
+                                        <Newspaper className="w-4 h-4" />
+                                        Start New Report
+                              </button>
+
+                              {/* Feature cards */}
+                              <div className="flex gap-4 mt-12">
+                                        {[
+                                                  { icon: Upload, label: 'Data Sources', desc: 'RSS, APIs, Web feeds' },
+                                                  { icon: Layers, label: 'AI Pipeline', desc: '4-stage workflow' },
+                                                  { icon: FileText, label: 'Weekly Report', desc: 'Publication ready' },
+                                        ].map(({ icon: Icon, label, desc }) => (
+                                                  <div
+                                                            key={label}
+                                                            className="flex flex-col items-center gap-2 px-8 py-5 rounded-xl border transition-colors hover:border-[var(--mars-color-border-strong)]"
+                                                            style={{
+                                                                      borderColor: 'var(--mars-color-border)',
+                                                                      backgroundColor: 'var(--mars-color-surface-raised)',
+                                                            }}
+                                                  >
+                                                            <Icon className="w-5 h-5" style={{ color: 'var(--mars-color-text-secondary)' }} />
+                                                            <span className="text-sm font-medium" style={{ color: 'var(--mars-color-text)' }}>{label}</span>
+                                                            <span className="text-[11px]" style={{ color: 'var(--mars-color-text-tertiary)' }}>{desc}</span>
+                                                  </div>
+                                        ))}
+                              </div>
+                    </div>
+          )
 }
 
 function HomeContent() {
-          const [resumeTaskId, setResumeTaskId] = useState<string | null>(null)
+          const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+          const [showTask, setShowTask] = useState(false)
           const [recentTasks, setRecentTasks] = useState<RecentTask[]>([])
           const [panelOpen, setPanelOpen] = useState(true)
           const [searchQuery, setSearchQuery] = useState('')
           const [activeFilter, setActiveFilter] = useState<FilterTab>('all')
-
-          const handleUrlResume = useCallback((id: string) => {
-                    setResumeTaskId(id)
-          }, [])
 
           const fetchRecent = useCallback(() => {
                     fetch(getApiUrl('/api/aiweekly/recent'))
@@ -87,19 +139,32 @@ function HomeContent() {
                               .catch(() => { })
           }, [])
 
-          // Fetch sessions on mount and periodically
+          const handleStartNew = useCallback(() => {
+                    setActiveTaskId(null)
+                    setShowTask(true)
+          }, [])
+
           useEffect(() => {
                     fetchRecent()
                     const interval = setInterval(fetchRecent, 30000)
                     return () => clearInterval(interval)
           }, [fetchRecent])
 
-          const handleStartNew = useCallback(() => {
-                    setResumeTaskId(null)
+          // Listen for global new-session event dispatched by TopBar
+          useEffect(() => {
+                    const handler = () => handleStartNew()
+                    window.addEventListener('mars:new-session', handler)
+                    return () => window.removeEventListener('mars:new-session', handler)
+          }, [handleStartNew])
+
+          const handleBackToHome = useCallback(() => {
+                    setActiveTaskId(null)
+                    setShowTask(false)
           }, [])
 
           const handleResume = useCallback((id: string) => {
-                    setResumeTaskId(id)
+                    setActiveTaskId(id)
+                    setShowTask(true)
           }, [])
 
           const handleDelete = useCallback(async (id: string, e: React.MouseEvent) => {
@@ -108,10 +173,13 @@ function HomeContent() {
                     try {
                               await fetch(getApiUrl(`/api/aiweekly/${id}`), { method: 'DELETE' })
                               setRecentTasks(prev => prev.filter(t => t.task_id !== id))
+                              if (activeTaskId === id) {
+                                        setActiveTaskId(null)
+                                        setShowTask(false)
+                              }
                     } catch { /* ignore */ }
-          }, [])
+          }, [activeTaskId])
 
-          // Filtered tasks
           const filteredTasks = useMemo(() => {
                     let tasks = recentTasks
                     if (activeFilter !== 'all') {
@@ -130,7 +198,6 @@ function HomeContent() {
                     return tasks
           }, [recentTasks, activeFilter, searchQuery])
 
-          // Counts per filter
           const counts = useMemo(() => {
                     const all = recentTasks.length
                     const running = recentTasks.filter(t => t.status === 'running' || t.status === 'pending').length
@@ -148,38 +215,45 @@ function HomeContent() {
 
           return (
                     <div className="flex h-full">
-                              <Suspense><ResumeParam onResume={handleUrlResume} /></Suspense>
 
                               {/* Main content area */}
-                              <div className="flex-1 min-h-0 overflow-auto">
-                                        <AIWeeklyReportTask
-                                                  onBack={handleStartNew}
-                                                  resumeTaskId={resumeTaskId}
-                                                  key={resumeTaskId || 'new'}
-                                        />
+                              <div className="flex-1 min-h-0 overflow-auto flex flex-col">
+                                        {showTask ? (
+                                                  <AIWeeklyReportTask
+                                                            onBack={handleBackToHome}
+                                                            resumeTaskId={activeTaskId}
+                                                            key={activeTaskId || 'new'}
+                                                  />
+                                        ) : (
+                                                  <HeroLanding onStart={handleStartNew} />
+                                        )}
                               </div>
 
                               {/* Right Sessions panel */}
                               <div
-                                        className="flex-shrink-0 border-l h-full flex flex-col transition-all duration-300 overflow-hidden"
+                                        className="flex-shrink-0 border-l h-full flex flex-col transition-all duration-300 relative"
                                         style={{
                                                   width: panelOpen ? '320px' : '40px',
                                                   backgroundColor: 'var(--mars-color-surface-raised)',
                                                   borderColor: 'var(--mars-color-border)',
                                         }}
                               >
-                                        {/* Toggle button */}
+                                        {/* Left-edge collapse/expand tab */}
                                         <button
                                                   onClick={() => setPanelOpen(prev => !prev)}
-                                                  className="p-2 flex items-center justify-center transition-colors hover:bg-[var(--mars-color-bg-hover)] flex-shrink-0"
-                                                  style={{ color: 'var(--mars-color-text-secondary)' }}
-                                                  aria-label={panelOpen ? 'Collapse panel' : 'Expand panel'}
+                                                  className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-full z-10 w-5 h-10 flex items-center justify-center rounded-l-md border border-r-0 transition-colors hover:bg-[var(--mars-color-bg-hover)]"
+                                                  style={{
+                                                            backgroundColor: 'var(--mars-color-surface-raised)',
+                                                            borderColor: 'var(--mars-color-border)',
+                                                            color: 'var(--mars-color-text-secondary)',
+                                                  }}
+                                                  aria-label={panelOpen ? 'Collapse sessions' : 'Expand sessions'}
                                         >
-                                                  {panelOpen ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+                                                  {panelOpen ? <ChevronRight className="w-3 h-3" /> : <ChevronLeft className="w-3 h-3" />}
                                         </button>
 
-                                        {panelOpen && (
-                                                  <div className="flex flex-col flex-1 min-h-0">
+                                        {panelOpen ? (
+                                                  <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
                                                             {/* SESSIONS header */}
                                                             <div className="px-4 pb-3">
                                                                       <h3 className="text-xs font-semibold tracking-widest uppercase mb-3"
@@ -306,6 +380,13 @@ function HomeContent() {
                                                                       }}>
                                                                       {recentTasks.length} session{recentTasks.length !== 1 ? 's' : ''} total
                                                             </div>
+                                                  </div>
+                                        ) : (
+                                                  <div className="flex-1 flex items-center justify-center overflow-hidden">
+                                                            <span className="text-[10px] font-semibold tracking-widest uppercase select-none"
+                                                                      style={{ color: 'var(--mars-color-text-secondary)', writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}>
+                                                                      Sessions
+                                                            </span>
                                                   </div>
                                         )}
                               </div>
