@@ -144,6 +144,11 @@ function HomeContent() {
                     setShowTask(true)
           }, [])
 
+          const handleBackToHome = useCallback(() => {
+                    setActiveTaskId(null)
+                    setShowTask(false)
+          }, [])
+
           useEffect(() => {
                     fetchRecent()
                     const interval = setInterval(fetchRecent, 30000)
@@ -157,10 +162,12 @@ function HomeContent() {
                     return () => window.removeEventListener('mars:new-session', handler)
           }, [handleStartNew])
 
-          const handleBackToHome = useCallback(() => {
-                    setActiveTaskId(null)
-                    setShowTask(false)
-          }, [])
+          // Listen for global go-home event dispatched by TopBar home button
+          useEffect(() => {
+                    const handler = () => handleBackToHome()
+                    window.addEventListener('mars:go-home', handler)
+                    return () => window.removeEventListener('mars:go-home', handler)
+          }, [handleBackToHome])
 
           const handleResume = useCallback((id: string) => {
                     setActiveTaskId(id)
