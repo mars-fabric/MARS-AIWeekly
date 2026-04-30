@@ -207,6 +207,65 @@ def _patch_solve_once():
 _patch_solve_once()
 
 
+def _patch_formatter_once():
+    """Monkey-patch StructuredMardown.format() to use triple-quoted strings.
+
+    The default implementation uses repr() which produces a single-line string.
+    For long reports this gets truncated by token limits, causing
+    "unterminated string literal" errors in the researcher_executor.
+    Triple-quoted strings are resilient to truncation (still valid Python
+    up to the cut point) and avoid the issue entirely.
+    """
+    try:
+        from cmbagent.agents.researcher_response_formatter.researcher_response_formatter import (
+            ResearcherResponseFormatterAgent,
+        )
+        StructuredMd = ResearcherResponseFormatterAgent.StructuredMardown
+
+        def _safe_format(self) -> str:
+            import re as _re
+            full_path = self.filename
+            comment_line = f"<!-- filename: {full_path} -->"
+            cleaned_block = _re.sub(
+                r"^\s*```(?:markdown)?\s*", "", self.markdown_block.strip(), flags=_re.IGNORECASE
+            )
+            cleaned_block = _re.sub(r"\s*```\s*$", "", cleaned_block, flags=_re.IGNORECASE)
+            lines = cleaned_block.splitlines()
+            if lines and lines[0].strip().startswith("<!-- filename:"):
+                lines[0] = comment_line
+            else:
+                lines = [comment_line] + lines
+            updated_markdown_block = "\n".join(lines)
+
+            # Use triple-quoted string with escaped backslashes/quotes
+            # This avoids the single-line repr() that causes unterminated literals
+            escaped = (
+                updated_markdown_block
+                .replace("\\", "\\\\")
+                .replace('"""', '\\"\\"\\"')
+            )
+            safe_filename = repr(full_path)
+            return (
+                f"Save the following content to file.\n\n"
+                f"```python\n"
+                f"import os\n"
+                f'content = """{escaped}"""\n'
+                f"filename = {safe_filename}\n"
+                f"filepath = os.path.join(os.getcwd(), filename)\n"
+                f"with open(filepath, 'w', encoding='utf-8') as f:\n"
+                f"    f.write(content)\n"
+                f"print(f'Saved {{len(content)}} chars to {{filepath}}')\n"
+                f"```"
+            )
+
+        StructuredMd.format = _safe_format
+        logger.info("Patched StructuredMardown.format() to use triple-quoted strings")
+    except (ImportError, AttributeError) as e:
+        logger.warning("Could not patch StructuredMardown.format(): %s", e)
+
+_patch_formatter_once()
+
+
 def _run_one_shot_sync(**kwargs) -> Dict[str, Any]:
     """Synchronous wrapper around cmbagent.one_shot for asyncio.to_thread."""
     import cmbagent
@@ -403,10 +462,11 @@ async def _run_aiweekly_one_shot_stage(
 
             # Safety check: if LLM merge is shorter than programmatic merge,
             # the LLM dropped items — use the programmatic merge instead
-            if len(merged_content) < len(combined) * 0.7:
+            if len(merged_content) < len(combined) * 0.85:
                 logger.warning(
-                    "LLM merge lost data (%d vs %d chars), using programmatic merge",
+                    "LLM merge lost data (%d vs %d chars, ratio=%.2f), using programmatic merge",
                     len(merged_content), len(combined),
+                    len(merged_content) / max(len(combined), 1),
                 )
                 merged_content = combined
 
@@ -559,10 +619,11 @@ async def _run_aiweekly_one_shot_stage(
 
             # Safety: if merge is suspiciously short, use raw concatenation
             raw_combined = "\n\n".join(partial_reports)
-            if len(merged_report) < len(raw_combined) * 0.5:
+            if len(merged_report) < len(raw_combined) * 0.80:
                 logger.warning(
-                    "LLM merge lost data (%d vs %d chars), using raw concatenation",
+                    "LLM report merge lost data (%d vs %d chars, ratio=%.2f), using raw concatenation",
                     len(merged_report), len(raw_combined),
+                    len(merged_report) / max(len(raw_combined), 1),
                 )
                 merged_report = raw_combined
 
@@ -585,49 +646,130 @@ async def _run_aiweekly_one_shot_stage(
             return output_data
 
     elif stage_num == 4:
-        # ── Pass A: Critic — critical audit of draft ──
-        with _console_lock:
-            _console_buffers.setdefault(buf_key, []).append(
-                "Running critic pass (editorial audit)..."
-            )
+        draft_report = shared_state.get("draft_report", "")
+        curated_items = shared_state.get("curated_items", "")
 
-        critique_kwargs = helpers.build_review_critique_kwargs(
-            draft_report=shared_state.get("draft_report", ""),
-            curated_items=shared_state.get("curated_items", ""),
-            date_from=date_from,
-            date_to=date_to,
-            style=style,
-            work_dir=work_dir,
-            config_overrides=config_overrides,
-            callbacks=callbacks,
+        # Determine if curated data needs chunked critic passes
+        from backend.task_framework.token_utils import count_tokens, get_model_limits
+        model_for_review = config_overrides.get("model", "gpt-4o")
+        max_ctx, max_output = get_model_limits(model_for_review)
+        # Budget: context - output - system overhead
+        input_budget_tokens = max_ctx - max_output - 1500
+        compact_curated = helpers._compact_curated_for_review(curated_items)
+        draft_tokens = count_tokens(draft_report, model_for_review)
+        curated_tokens = count_tokens(compact_curated, model_for_review)
+        prompt_overhead_tokens = 2000  # template text
+
+        needs_chunked_critic = (
+            draft_tokens + curated_tokens + prompt_overhead_tokens > input_budget_tokens
         )
 
-        original_stdout, original_stderr = sys.stdout, sys.stderr
-        capture_out = _ConsoleCapture(buf_key, original_stdout)
-        capture_err = _ConsoleCapture(buf_key, original_stderr)
-        try:
-            sys.stdout = capture_out
-            sys.stderr = capture_err
-            critique_result = await asyncio.to_thread(
-                _run_one_shot_sync, **critique_kwargs,
-            )
-        finally:
-            sys.stdout = original_stdout
-            sys.stderr = original_stderr
+        if needs_chunked_critic:
+            # ── Chunked Critic: split curated items across multiple critic calls ──
+            # Each critic call gets the full draft + a subset of curated items
+            curated_budget_per_call = input_budget_tokens - draft_tokens - prompt_overhead_tokens
+            # Convert token budget to char budget (~4 chars/token)
+            curated_char_budget = max(curated_budget_per_call * 4, 30_000)
+            curated_chunks = helpers.split_curated_items(compact_curated, target_chars=curated_char_budget)
 
-        review_critique = helpers.extract_stage_result(critique_result)
-        helpers.save_stage_file(review_critique, work_dir, "review_critique.md")
+            with _console_lock:
+                _console_buffers.setdefault(buf_key, []).append(
+                    f"Running chunked critic pass ({len(curated_chunks)} chunks, "
+                    f"draft={draft_tokens} tokens, curated={curated_tokens} tokens)..."
+                )
 
-        with _console_lock:
-            _console_buffers.setdefault(buf_key, []).append(
-                f"Critic pass complete — {len(review_critique)} chars. "
-                "Running editor pass..."
+            all_critiques: list[str] = []
+            all_chat_history: list = []
+            for ci, curated_chunk in enumerate(curated_chunks, 1):
+                with _console_lock:
+                    _console_buffers.setdefault(buf_key, []).append(
+                        f"Critic reviewing chunk {ci}/{len(curated_chunks)}..."
+                    )
+                chunk_kwargs = helpers.build_review_critique_kwargs(
+                    draft_report=draft_report,
+                    curated_items=curated_chunk,
+                    date_from=date_from,
+                    date_to=date_to,
+                    style=style,
+                    work_dir=work_dir,
+                    config_overrides=config_overrides,
+                    callbacks=callbacks,
+                )
+                original_stdout, original_stderr = sys.stdout, sys.stderr
+                capture_out = _ConsoleCapture(buf_key, original_stdout)
+                capture_err = _ConsoleCapture(buf_key, original_stderr)
+                try:
+                    sys.stdout = capture_out
+                    sys.stderr = capture_err
+                    chunk_critique_result = await asyncio.to_thread(
+                        _run_one_shot_sync, **chunk_kwargs,
+                    )
+                finally:
+                    sys.stdout = original_stdout
+                    sys.stderr = original_stderr
+
+                chunk_critique = helpers.extract_stage_result(chunk_critique_result)
+                helpers.save_stage_file(chunk_critique, work_dir, f"review_critique_part_{ci}.md")
+                all_critiques.append(chunk_critique)
+                all_chat_history.extend(chunk_critique_result.get("chat_history", []))
+
+            # Combine all critic corrections
+            review_critique = "\n\n".join(
+                f"--- Corrections (batch {i+1}/{len(all_critiques)}) ---\n{c}"
+                for i, c in enumerate(all_critiques)
             )
+            helpers.save_stage_file(review_critique, work_dir, "review_critique.md")
+
+            with _console_lock:
+                _console_buffers.setdefault(buf_key, []).append(
+                    f"Chunked critic complete — {len(review_critique)} chars total. "
+                    "Running editor pass..."
+                )
+        else:
+            # ── Standard single critic pass ──
+            with _console_lock:
+                _console_buffers.setdefault(buf_key, []).append(
+                    "Running critic pass (editorial audit)..."
+                )
+
+            critique_kwargs = helpers.build_review_critique_kwargs(
+                draft_report=draft_report,
+                curated_items=curated_items,
+                date_from=date_from,
+                date_to=date_to,
+                style=style,
+                work_dir=work_dir,
+                config_overrides=config_overrides,
+                callbacks=callbacks,
+            )
+
+            original_stdout, original_stderr = sys.stdout, sys.stderr
+            capture_out = _ConsoleCapture(buf_key, original_stdout)
+            capture_err = _ConsoleCapture(buf_key, original_stderr)
+            try:
+                sys.stdout = capture_out
+                sys.stderr = capture_err
+                critique_result = await asyncio.to_thread(
+                    _run_one_shot_sync, **critique_kwargs,
+                )
+            finally:
+                sys.stdout = original_stdout
+                sys.stderr = original_stderr
+
+            review_critique = helpers.extract_stage_result(critique_result)
+            helpers.save_stage_file(review_critique, work_dir, "review_critique.md")
+            all_chat_history = critique_result.get("chat_history", [])
+
+            with _console_lock:
+                _console_buffers.setdefault(buf_key, []).append(
+                    f"Critic pass complete — {len(review_critique)} chars. "
+                    "Running editor pass..."
+                )
 
         # ── Pass B: Editor — apply corrections + final polish ──
         kwargs = helpers.build_review_kwargs(
-            draft_report=shared_state.get("draft_report", ""),
-            curated_items=shared_state.get("curated_items", ""),
+            draft_report=draft_report,
+            curated_items=curated_items,
             date_from=date_from,
             date_to=date_to,
             style=style,
@@ -680,6 +822,11 @@ async def _run_aiweekly_one_shot_stage(
 
     # Build output_data
     chat_history = result.get("chat_history", [])
+    # For Stage 4: include critic chat_history (from chunked or single pass)
+    try:
+        chat_history = all_chat_history + chat_history
+    except NameError:
+        pass
     output_data: Dict[str, Any] = {
         "shared": {**shared_state, shared_key: result_content},
         "artifacts": {file_name: file_path, "orchestration": "one_shot"},

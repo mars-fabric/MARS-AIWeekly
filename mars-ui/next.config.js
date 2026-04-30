@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 const path = require('path');
-const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8011';
+const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8022';
 
 const nextConfig = {
   // Disable strict mode to prevent double-render in dev (a common lag source)
@@ -15,6 +15,11 @@ const nextConfig = {
   // Explicitly set turbopack root to avoid conflicts with multiple lockfiles
   turbopack: {
     root: path.resolve(__dirname),
+  },
+
+  // Increase proxy timeout for long-running AI operations (default is 30s)
+  httpAgentOptions: {
+    keepAlive: true,
   },
 
   async rewrites() {

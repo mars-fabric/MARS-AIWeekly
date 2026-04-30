@@ -136,6 +136,20 @@ def _strip_code_wrapper(text: str) -> str:
                     if isinstance(target, _ast.Name) and target.id in _VAR_NAMES:
                         if isinstance(node.value, _ast.Constant) and isinstance(node.value.value, str):
                             return node.value.value.strip()
+                        # Handle concatenated string literals: ("part1" "part2" ...)
+                        if isinstance(node.value, _ast.JoinedStr):
+                            pass  # f-strings, skip
+                        if isinstance(node.value, _ast.BinOp) and isinstance(node.value.op, _ast.Add):
+                            parts = []
+                            def _collect_str_parts(n):
+                                if isinstance(n, _ast.Constant) and isinstance(n.value, str):
+                                    parts.append(n.value)
+                                elif isinstance(n, _ast.BinOp) and isinstance(n.op, _ast.Add):
+                                    _collect_str_parts(n.left)
+                                    _collect_str_parts(n.right)
+                            _collect_str_parts(node.value)
+                            if parts:
+                                return "".join(parts).strip()
     except SyntaxError:
         pass
 
@@ -150,11 +164,15 @@ def _strip_code_wrapper(text: str) -> str:
         if m:
             return m.group(1).strip()
 
+    # Handle repr()-style single/double quoted strings (may be very long).
+    # Match from the assignment to the last occurrence of the closing quote
+    # before a known boilerplate line (filename=, with open, etc.).
     for quote in ("'", '"'):
+        # Greedy match up to the last quote before a boilerplate line
         pattern = (
             r"(?:content|report|text|output|markdown)\s*=\s*"
             + re.escape(quote)
-            + r"(.*?)"
+            + r"(.*)"
             + re.escape(quote)
             + r"\s*\n"
             + r"(?:filename|filepath|path|print|with |os\.)"
@@ -163,6 +181,29 @@ def _strip_code_wrapper(text: str) -> str:
         if m:
             val = m.group(1)
             val = val.replace("\\n", "\n").replace("\\'", "'").replace('\\"', '"').replace("\\\\", "\\")
+            return val.strip()
+
+    # Handle truncated repr() strings: content = '...<truncated>
+    # Extract whatever is after `content = '` even if the closing quote is missing
+    trunc_pattern = re.compile(
+        r"(?:content|report|text|output|markdown)\s*=\s*(['\"])(.*)",
+        re.DOTALL,
+    )
+    m = trunc_pattern.search(code)
+    if m:
+        quote_char = m.group(1)
+        val = m.group(2)
+        # Strip trailing boilerplate lines that leaked in
+        boilerplate_start = re.search(
+            r"\n\s*(?:filename|filepath|path|print|with |os\.|import |f\.write)",
+            val,
+        )
+        if boilerplate_start:
+            val = val[:boilerplate_start.start()]
+        # Remove trailing unmatched quote if present
+        val = val.rstrip(quote_char)
+        val = val.replace("\\n", "\n").replace("\\'", "'").replace('\\"', '"').replace("\\\\", "\\")
+        if len(val.strip()) > 200:  # Only use if substantial content was recovered
             return val.strip()
 
     _BOILERPLATE = re.compile(
@@ -263,21 +304,33 @@ def _get_chunk_budget(model: str = "gpt-4o") -> int:
 
 
 def split_collection_items(compact_md: str, target_chars: int = _CHUNK_TARGET_CHARS) -> list[str]:
-    """Split compacted collection markdown into chunks for chunked curation."""
+    """Split compacted collection markdown into chunks for chunked curation.
+
+    Handles multi-line items: each item starts with '- **' and includes
+    all continuation lines (summary, Source: URL) until the next item.
+    """
     if len(compact_md) <= target_chars:
         return [compact_md]
 
     lines = compact_md.splitlines()
     header: list[str] = []
-    item_lines: list[str] = []
+    items: list[list[str]] = []
+    current_item: list[str] = []
 
     for line in lines:
         if line.strip().startswith("- **"):
-            item_lines.append(line)
-        elif not item_lines:
+            if current_item:
+                items.append(current_item)
+            current_item = [line]
+        elif current_item:
+            current_item.append(line)
+        elif not items:
             header.append(line)
 
-    if not item_lines:
+    if current_item:
+        items.append(current_item)
+
+    if not items:
         return [compact_md]
 
     header_text = "\n".join(header).strip()
@@ -288,14 +341,15 @@ def split_collection_items(compact_md: str, target_chars: int = _CHUNK_TARGET_CH
     current_chunk: list[str] = []
     current_size = 0
 
-    for item in item_lines:
-        item_size = len(item) + 1
+    for item_lines in items:
+        item_text = "\n".join(item_lines)
+        item_size = len(item_text) + 1
         if current_size + item_size > budget and current_chunk:
             chunk_body = "\n".join(current_chunk)
             chunks.append(f"{header_text}\n\n{chunk_body}" if header_text else chunk_body)
             current_chunk = []
             current_size = 0
-        current_chunk.append(item)
+        current_chunk.append(item_text)
         current_size += item_size
 
     if current_chunk:
@@ -392,21 +446,54 @@ def merge_curated_chunks(partial_results: list[str]) -> str:
     """Merge partial curation outputs into a single deduplicated list.
 
     After running curation per chunk, this combines all results and removes
-    duplicates (by normalized title). Preserves the FIRST occurrence's full text.
+    duplicates (by normalized title + org). Preserves the FIRST occurrence's
+    full text but merges source URLs from duplicates.
     """
-    seen_titles: set = set()
+    seen_titles: dict[str, int] = {}  # title_key → index in merged_items
     merged_items: list[str] = []
     current_item_lines: list[str] = []
+
+    def _normalize_title(line: str) -> str:
+        """Normalize title for dedup — use full title text (not truncated)."""
+        # Remove markdown bold, strip org/date after first pipe
+        normalized = re.sub(r'\*\*', '', line)
+        # Keep text before the first pipe (the actual title)
+        parts = normalized.split('|')
+        return parts[0].strip().lower()
+
+    def _extract_sources(lines: list[str]) -> list[str]:
+        """Extract source URLs from item lines."""
+        urls = []
+        for ln in lines:
+            if 'Sources:' in ln or 'Source:' in ln:
+                urls.extend(re.findall(r'https?://[^\s,)]+', ln))
+            elif re.match(r'\s*https?://', ln.strip()):
+                urls.extend(re.findall(r'https?://[^\s,)]+', ln))
+        return urls
 
     def _flush():
         nonlocal current_item_lines
         if current_item_lines:
-            # Extract title for dedup
             first_line = current_item_lines[0].strip()
-            # Normalize: lowercase, strip markdown bold markers and dates
-            title_key = re.sub(r'\*\*|\|.*$', '', first_line).strip().lower()[:100]
-            if title_key not in seen_titles:
-                seen_titles.add(title_key)
+            title_key = _normalize_title(first_line)
+            if title_key in seen_titles:
+                # Merge URLs from duplicate into existing item
+                existing_idx = seen_titles[title_key]
+                new_urls = _extract_sources(current_item_lines)
+                if new_urls:
+                    existing_text = merged_items[existing_idx]
+                    existing_urls = set(re.findall(r'https?://[^\s,)]+', existing_text))
+                    for url in new_urls:
+                        if url not in existing_urls:
+                            # Append new URL to Sources line
+                            if 'Sources:' in existing_text:
+                                existing_text = existing_text.rstrip() + f", {url}"
+                            else:
+                                existing_text += f"\n  Sources: {url}"
+                            existing_urls.add(url)
+                    merged_items[existing_idx] = existing_text
+            else:
+                seen_titles[title_key] = len(merged_items)
                 merged_items.append("\n".join(current_item_lines))
         current_item_lines = []
 
@@ -497,7 +584,10 @@ def extract_stage_result(results: dict) -> str:
     """Extract the researcher's output from one_shot results."""
     chat_history = results.get("chat_history", [])
 
-    for agent_name in ("researcher_response_formatter", "researcher"):
+    # Prefer researcher (raw markdown) over researcher_response_formatter
+    # (code-wrapped) to avoid unterminated-string-literal issues when
+    # the formatter's repr()-encoded script is truncated by token limits.
+    for agent_name in ("researcher", "researcher_response_formatter"):
         for msg in reversed(chat_history):
             if msg.get("name") == agent_name:
                 content = msg.get("content", "")
@@ -794,6 +884,7 @@ def build_curation_merge_kwargs(
 ) -> dict:
     """Build kwargs for one_shot() — merge chunked curation results."""
     from backend.task_framework.prompts.aiweekly.stages import curation_merge_prompt
+    from backend.task_framework.token_utils import count_tokens, get_model_limits
 
     sub_dir = create_work_dir(work_dir, "curation_merge")
 
@@ -802,6 +893,11 @@ def build_curation_merge_kwargs(
         for i, part in enumerate(partial_curations)
     )
 
+    # Check if combined partials fit in model context
+    model = (config_overrides or {}).get("model", "gpt-4o")
+    max_ctx, max_output = get_model_limits(model)
+    input_budget = max_ctx - max_output - 1500
+
     task = curation_merge_prompt.format(
         date_from=date_from,
         date_to=date_to,
@@ -809,6 +905,34 @@ def build_curation_merge_kwargs(
         num_parts=len(partial_curations),
         partial_curations=combined,
     )
+
+    task_tokens = count_tokens(task, model)
+    if task_tokens > input_budget:
+        # Fit combined partials to context budget
+        prompt_without_data = curation_merge_prompt.format(
+            date_from=date_from,
+            date_to=date_to,
+            topics=", ".join(topics) if topics else "AI, ML",
+            num_parts=len(partial_curations),
+            partial_curations="",
+        )
+        overhead_tokens = count_tokens(prompt_without_data, model)
+        data_budget = input_budget - overhead_tokens - 500
+        combined, was_truncated = fit_content_to_context(
+            combined, model, reserved_tokens=(max_ctx - data_budget),
+        )
+        if was_truncated:
+            logger.warning(
+                "Curation merge: combined partials truncated to fit context (%d tokens over)",
+                task_tokens - input_budget,
+            )
+        task = curation_merge_prompt.format(
+            date_from=date_from,
+            date_to=date_to,
+            topics=", ".join(topics) if topics else "AI, ML",
+            num_parts=len(partial_curations),
+            partial_curations=combined,
+        )
 
     return dict(
         task=task,
@@ -842,10 +966,16 @@ def build_generation_analysis_kwargs(
     from backend.task_framework.prompts.aiweekly.stages import (
         generation_analyst_prompt,
     )
+    from backend.task_framework.token_utils import count_tokens, get_model_limits
 
     sub_dir = create_work_dir(work_dir, "generation_analysis")
 
     compact_curated = _compact_curated_for_review(curated_items)
+
+    # Ensure curated items fit within model context for analyst
+    model = (config_overrides or {}).get("model", "gpt-4o")
+    max_ctx, max_output = get_model_limits(model)
+    input_budget = max_ctx - max_output - 1500
 
     task = generation_analyst_prompt.format(
         date_from=date_from,
@@ -854,6 +984,34 @@ def build_generation_analysis_kwargs(
         topics=", ".join(topics) if topics else "AI, ML",
         curated_items=compact_curated,
     )
+
+    task_tokens = count_tokens(task, model)
+    if task_tokens > input_budget:
+        # Fit curated items to budget
+        prompt_without_curated = generation_analyst_prompt.format(
+            date_from=date_from,
+            date_to=date_to,
+            style=style,
+            topics=", ".join(topics) if topics else "AI, ML",
+            curated_items="",
+        )
+        overhead_tokens = count_tokens(prompt_without_curated, model)
+        curated_budget = input_budget - overhead_tokens - 500
+        compact_curated, was_truncated = fit_content_to_context(
+            compact_curated, model, reserved_tokens=(max_ctx - curated_budget),
+        )
+        if was_truncated:
+            logger.warning(
+                "Stage 3 analyst: curated_items truncated to fit context (%d tokens over budget)",
+                task_tokens - input_budget,
+            )
+        task = generation_analyst_prompt.format(
+            date_from=date_from,
+            date_to=date_to,
+            style=style,
+            topics=", ".join(topics) if topics else "AI, ML",
+            curated_items=compact_curated,
+        )
 
     return dict(
         task=task,
@@ -986,6 +1144,7 @@ def build_review_critique_kwargs(
     from backend.task_framework.prompts.aiweekly.stages import (
         review_critic_prompt,
     )
+    from backend.task_framework.token_utils import count_tokens, get_model_limits
 
     sub_dir = create_work_dir(work_dir, "review_critique")
 
@@ -993,6 +1152,13 @@ def build_review_critique_kwargs(
 
     compact_curated = _compact_curated_for_review(curated_items)
 
+    # Ensure combined prompt fits within model context
+    model = (config_overrides or {}).get("model", "gpt-4o")
+    max_ctx, max_output = get_model_limits(model)
+    # Reserve tokens for: system prompt (~500), output, safety margin
+    input_budget = max_ctx - max_output - 1000
+
+    # Build prompt and check fit
     task = review_critic_prompt.format(
         date_from=date_from,
         date_to=date_to,
@@ -1001,6 +1167,36 @@ def build_review_critique_kwargs(
         draft_report=draft_report,
         curated_items=compact_curated,
     )
+
+    task_tokens = count_tokens(task, model)
+    if task_tokens > input_budget:
+        # Curated items are the largest part — fit them to remaining budget
+        prompt_without_curated = review_critic_prompt.format(
+            date_from=date_from,
+            date_to=date_to,
+            style=style,
+            word_rule=word_rule,
+            draft_report=draft_report,
+            curated_items="",
+        )
+        overhead_tokens = count_tokens(prompt_without_curated, model)
+        curated_budget = input_budget - overhead_tokens - 500
+        compact_curated, was_truncated = fit_content_to_context(
+            compact_curated, model, reserved_tokens=(max_ctx - curated_budget),
+        )
+        if was_truncated:
+            logger.warning(
+                "Stage 4 critic: curated_items truncated to fit context (%d→%d tokens)",
+                task_tokens, count_tokens(compact_curated, model) + overhead_tokens,
+            )
+        task = review_critic_prompt.format(
+            date_from=date_from,
+            date_to=date_to,
+            style=style,
+            word_rule=word_rule,
+            draft_report=draft_report,
+            curated_items=compact_curated,
+        )
 
     return dict(
         task=task,
@@ -1031,12 +1227,18 @@ def build_review_kwargs(
     from backend.task_framework.prompts.aiweekly.stages import (
         review_editor_prompt,
     )
+    from backend.task_framework.token_utils import count_tokens, get_model_limits
 
     sub_dir = create_work_dir(work_dir, "review")
 
     expand_instruction, word_rule = get_expand_instruction(style)
 
     compact_curated = _compact_curated_for_review(curated_items)
+
+    # Ensure combined prompt fits within model context
+    model = (config_overrides or {}).get("model", "gpt-4o")
+    max_ctx, max_output = get_model_limits(model)
+    input_budget = max_ctx - max_output - 1000
 
     task = review_editor_prompt.format(
         date_from=date_from,
@@ -1049,6 +1251,42 @@ def build_review_kwargs(
         draft_report=draft_report,
         curated_items=compact_curated,
     )
+
+    task_tokens = count_tokens(task, model)
+    if task_tokens > input_budget:
+        # Fit curated_items to remaining budget (draft_report + critique are essential)
+        prompt_without_curated = review_editor_prompt.format(
+            date_from=date_from,
+            date_to=date_to,
+            style=style,
+            expand_instruction=expand_instruction,
+            word_rule=word_rule,
+            style_rule=get_style_rule(style),
+            review_critique=review_critique,
+            draft_report=draft_report,
+            curated_items="",
+        )
+        overhead_tokens = count_tokens(prompt_without_curated, model)
+        curated_budget = input_budget - overhead_tokens - 500
+        compact_curated, was_truncated = fit_content_to_context(
+            compact_curated, model, reserved_tokens=(max_ctx - curated_budget),
+        )
+        if was_truncated:
+            logger.warning(
+                "Stage 4 editor: curated_items truncated to fit context (%d→%d tokens)",
+                task_tokens, count_tokens(compact_curated, model) + overhead_tokens,
+            )
+        task = review_editor_prompt.format(
+            date_from=date_from,
+            date_to=date_to,
+            style=style,
+            expand_instruction=expand_instruction,
+            word_rule=word_rule,
+            style_rule=get_style_rule(style),
+            review_critique=review_critique,
+            draft_report=draft_report,
+            curated_items=compact_curated,
+        )
 
     return dict(
         task=task,

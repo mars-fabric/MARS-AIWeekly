@@ -11,6 +11,7 @@ STAGE_AGENTS = {
 _OUTPUT_RULES = (
     "\n\nOUTPUT RULES:\n"
     "- Return ONLY plain markdown. No code, no scripts, no file-saving logic.\n"
+    "- Do NOT wrap your output in a Python script (no content='...', no open(), no f.write()).\n"
     "- Do NOT add HTML comments (e.g. <!-- filename: ... -->).\n"
     "- Do NOT wrap output in ```markdown fences.\n"
     "- Start directly with the content.\n"

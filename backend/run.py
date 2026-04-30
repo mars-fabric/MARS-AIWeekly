@@ -73,4 +73,5 @@ if __name__ == "__main__":
         reload_excludes=reload_excludes if enable_reload else None,
         log_level="info",
         log_config=None,  # Don't override app's logging configuration
+        timeout_keep_alive=600,  # Keep connections alive during long LLM operations
     )
