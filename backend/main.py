@@ -12,6 +12,9 @@ sys.path.append(str(Path(__file__).parent.parent))
 # Add the backend directory to the path to import local modules
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Inject aiweekly model config into cmbagent registry (must run before routers)
+import backend.config  # noqa: E402, F401
+
 from fastapi import FastAPI, WebSocket
 
 # Import core app factory

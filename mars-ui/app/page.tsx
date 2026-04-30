@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Newspaper, Play, CheckCircle2, AlertCircle, Search, X, ChevronLeft, ChevronRight, Loader2, Sparkles, Upload, Layers, FileText } from 'lucide-react'
 import AIWeeklyReportTask from '@/components/tasks/AIWeeklyReportTask'
-import { getApiUrl } from '@/lib/config'
 
 interface RecentTask {
           task_id: string
@@ -23,18 +22,13 @@ const STAGE_NAMES: Record<number, string> = {
 
 type FilterTab = 'all' | 'running' | 'completed' | 'failed'
 
-function timeAgo(dateStr: string | null): string {
+function formatDateTime(dateStr: string | null): string {
           if (!dateStr) return ''
-          const now = Date.now()
-          const then = new Date(dateStr).getTime()
-          const diffMs = now - then
-          const mins = Math.floor(diffMs / 60000)
-          if (mins < 1) return 'just now'
-          if (mins < 60) return `${mins}m ago`
-          const hours = Math.floor(mins / 60)
-          if (hours < 24) return `about ${hours} hour${hours > 1 ? 's' : ''} ago`
-          const days = Math.floor(hours / 24)
-          return `${days} day${days > 1 ? 's' : ''} ago`
+          const d = new Date(dateStr)
+          return d.toLocaleString(undefined, {
+                    month: 'short', day: 'numeric',
+                    hour: '2-digit', minute: '2-digit',
+          })
 }
 
 function getStatusColor(status: string): string {
@@ -133,7 +127,7 @@ function HomeContent() {
           const [activeFilter, setActiveFilter] = useState<FilterTab>('all')
 
           const fetchRecent = useCallback(() => {
-                    fetch(getApiUrl('/api/aiweekly/recent'))
+                    fetch('/api/aiweekly/recent')
                               .then(r => r.ok ? r.json() : [])
                               .then((data: RecentTask[]) => setRecentTasks(data))
                               .catch(() => { })
@@ -178,7 +172,7 @@ function HomeContent() {
                     e.stopPropagation()
                     if (!confirm('Delete this task? This will remove all data and files.')) return
                     try {
-                              await fetch(getApiUrl(`/api/aiweekly/${id}`), { method: 'DELETE' })
+                              await fetch(`/api/aiweekly/${id}`, { method: 'DELETE' })
                               setRecentTasks(prev => prev.filter(t => t.task_id !== id))
                               if (activeTaskId === id) {
                                         setActiveTaskId(null)
@@ -334,9 +328,11 @@ function HomeContent() {
                                                                                                                         </p>
                                                                                                                         <p className="text-[11px] mt-0.5"
                                                                                                                                   style={{ color: 'var(--mars-color-text-tertiary)' }}>
-                                                                                                                                  {task.current_stage
-                                                                                                                                            ? `Stage ${task.current_stage}: ${STAGE_NAMES[task.current_stage] || ''}`
-                                                                                                                                            : 'Setup'}
+                                                                                                                                  {task.status === 'completed'
+                                                                                                                                            ? 'Completed'
+                                                                                                                                            : task.current_stage
+                                                                                                                                                      ? `Stage ${task.current_stage}: ${STAGE_NAMES[task.current_stage] || ''}`
+                                                                                                                                                      : 'Setup'}
                                                                                                                         </p>
                                                                                                                         {/* Progress bar */}
                                                                                                                         <div className="flex items-center gap-2 mt-2">
@@ -358,7 +354,7 @@ function HomeContent() {
                                                                                                                         {/* Time ago */}
                                                                                                                         <p className="text-[10px] mt-1.5"
                                                                                                                                   style={{ color: 'var(--mars-color-text-tertiary)' }}>
-                                                                                                                                  {timeAgo(task.created_at)}
+                                                                                                                                  {formatDateTime(task.created_at)}
                                                                                                                         </p>
                                                                                                               </div>
                                                                                                               {/* Delete button */}

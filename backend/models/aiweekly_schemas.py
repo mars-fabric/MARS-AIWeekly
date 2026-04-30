@@ -10,10 +10,10 @@ class AIWeeklyCreateRequest(BaseModel):
         "github", "press-releases", "company-announcements",
         "major-releases", "curated-ai-websites",
     ]
+    custom_sources: Optional[List[str]] = None
     date_from: str
     date_to: str
     style: str = "concise"
-    custom_sources: Optional[List[Dict[str, str]]] = None  # [{"type": "url"|"rss"|"text", "value": "..."}]
     config: Optional[Dict[str, Any]] = None
     work_dir: Optional[str] = None
 

@@ -22,6 +22,7 @@ export default function AIWeeklyReportPanel({ hook, stageNum, onBack }: AIWeekly
 
     const [contentLoaded, setContentLoaded] = useState(false)
     const [showFullView, setShowFullView] = useState(false)
+    const [viewingArtifact, setViewingArtifact] = useState<string | null>(null)
     const [previewMaximized, setPreviewMaximized] = useState(false)
     const [previewSize, setPreviewSize] = useState({ width: 900, height: 700 })
     const resizingRef = useRef(false)
@@ -158,12 +159,27 @@ export default function AIWeeklyReportPanel({ hook, stageNum, onBack }: AIWeekly
                                 <FileText className="w-4 h-4" style={{ color: 'var(--mars-color-text-secondary)' }} />
                                 <span className="text-sm" style={{ color: 'var(--mars-color-text)' }}>{file}</span>
                             </div>
-                            {taskId && (
-                                <a href={getApiUrl(`/api/aiweekly/${taskId}/download/${file}`)}
-                                    className="text-xs font-medium hover:underline" style={{ color: 'var(--mars-color-primary)' }} download>
-                                    <Download className="w-3.5 h-3.5 inline mr-1" />Download
-                                </a>
-                            )}
+                            <div className="flex items-center gap-2">
+                                {taskId && (
+                                    <>
+                                        <button
+                                            onClick={() => setViewingArtifact(file)}
+                                            className="text-xs font-medium hover:underline flex items-center gap-1"
+                                            style={{ color: 'var(--mars-color-primary)' }}
+                                        >
+                                            <Eye className="w-3.5 h-3.5" />View PDF
+                                        </button>
+                                        <a href={getApiUrl(`/api/aiweekly/${taskId}/download-pdf/${file}`)} download
+                                            className="text-xs font-medium hover:underline flex items-center gap-1" style={{ color: 'var(--mars-color-primary)' }}>
+                                            <FileDown className="w-3.5 h-3.5" />PDF
+                                        </a>
+                                        <a href={getApiUrl(`/api/aiweekly/${taskId}/download/${file}`)}
+                                            className="text-xs font-medium hover:underline flex items-center gap-1" style={{ color: 'var(--mars-color-text-secondary)' }} download>
+                                            <Download className="w-3.5 h-3.5" />MD
+                                        </a>
+                                    </>
+                                )}
+                            </div>
                         </div>
                     ))}
                 </div>
@@ -233,6 +249,73 @@ export default function AIWeeklyReportPanel({ hook, stageNum, onBack }: AIWeekly
                             )}
                         </div>
                         {/* Resize handle */}
+                        {!previewMaximized && (
+                            <div
+                                className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize"
+                                style={{ background: 'linear-gradient(135deg, transparent 50%, #a0aec0 50%)', borderRadius: '0 0 8px 0' }}
+                                onMouseDown={handleResizeStart}
+                            />
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* Per-artifact PDF viewer modal */}
+            {viewingArtifact && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center"
+                    style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
+                    onClick={() => setViewingArtifact(null)}
+                >
+                    <div
+                        className="relative flex flex-col rounded-lg shadow-2xl overflow-hidden"
+                        style={{
+                            backgroundColor: '#ffffff',
+                            width: previewMaximized ? '100vw' : `${previewSize.width}px`,
+                            height: previewMaximized ? '100vh' : `${previewSize.height}px`,
+                            maxWidth: '100vw',
+                            maxHeight: '100vh',
+                            borderRadius: previewMaximized ? 0 : '8px',
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div
+                            className="flex items-center justify-between px-5 py-3 border-b"
+                            style={{ borderColor: '#e2e8f0', backgroundColor: '#f8fafc' }}
+                        >
+                            <h2 className="text-base font-semibold" style={{ color: '#1a202c' }}>
+                                {viewingArtifact}
+                            </h2>
+                            <div className="flex items-center gap-2">
+                                {taskId && (
+                                    <a href={getApiUrl(`/api/aiweekly/${taskId}/download-pdf/${viewingArtifact}`)} download>
+                                        <Button variant="primary" size="sm">
+                                            <Download className="w-3.5 h-3.5 mr-1" />Download PDF
+                                        </Button>
+                                    </a>
+                                )}
+                                <Button onClick={() => setPreviewMaximized(!previewMaximized)} variant="secondary" size="sm">
+                                    {previewMaximized ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                                </Button>
+                                <Button onClick={() => setViewingArtifact(null)} variant="secondary" size="sm">
+                                    <X className="w-4 h-4" />
+                                </Button>
+                            </div>
+                        </div>
+                        <div className="flex-1 overflow-hidden" style={{ backgroundColor: '#ffffff' }}>
+                            {taskId ? (
+                                <iframe
+                                    src={getApiUrl(`/api/aiweekly/${taskId}/download-pdf/${viewingArtifact}?inline=true`) + '#toolbar=1&navpanes=0'}
+                                    className="w-full h-full border-0"
+                                    style={{ backgroundColor: '#ffffff' }}
+                                    title={`${viewingArtifact} PDF Preview`}
+                                />
+                            ) : (
+                                <div className="flex items-center justify-center h-full text-sm" style={{ color: '#718096' }}>
+                                    No file available
+                                </div>
+                            )}
+                        </div>
                         {!previewMaximized && (
                             <div
                                 className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize"

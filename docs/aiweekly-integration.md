@@ -30,16 +30,17 @@ The AI Weekly Report Generator is a **standalone, 4-stage, human-in-the-loop AI 
 
 1. **Data Collection** → 2. **Content Curation** → 3. **Report Generation** → 4. **Quality Review**
 
-Stage 1 uses **direct Python tool calls** (no LLM). Stages 2–4 use a **3-agent LLM pipeline** (Primary → Specialist → Reviewer) via `AIWeeklyPhaseBase`.
+Stage 1 uses **direct Python tool calls** (no LLM). Stages 2–4 use **`cmbagent.one_shot(agent='researcher')`** with token-aware chunking and multi-pass LLM execution.
 
 **Key technologies:**
 - **Backend:** Python, FastAPI, asyncio
-- **Phase System:** `AIWeeklyPhaseBase` → 4 phase subclasses
+- **Execution Engine:** `one_shot(agent='researcher')` via `cmbagent` + helper functions in `aiweekly_helpers.py`
 - **Data Collection:** `news_tools.py` — direct page scraping, RSS feeds, NewsAPI, GNews, DDG/Bing/Yahoo/Brave; 26 curated sources
 - **Frontend:** React, TypeScript, Next.js (single-page app)
 - **Real-time:** REST polling (console output)
 - **Storage:** JSON file-based (`task.json` per task in `~/Desktop/cmbdir/aiweekly/`)
 - **Default LLM:** Dynamic from `WorkflowConfig.default_llm_model`; per-stage override via UI
+- **Agent Enforcement:** Monkey-patch on `CMBAgent.solve` prevents control agent from switching to `engineer`
 - **Mode:** `"aiweekly"`
 
 ---
@@ -65,16 +66,16 @@ Stage 1 uses **direct Python tool calls** (no LLM). Stages 2–4 use a **3-agent
 ┌───────────────────────────────────────────────────────────────────────┐
 │                         BACKEND (FastAPI)                              │
 │                                                                       │
-│  routers/aiweekly.py ── REST endpoints + phase execution engine       │
-│    _run_aiweekly_stage():                                            │
-│      1. _load_phase_class(stage_num) ── importlib dynamic load        │
-│      2. PhaseClass(config=...)                                         │
-│      3. PhaseContext(task, work_dir, shared_state)                     │
-│      4. await phase.execute(ctx)                                       │
-│      5. Extract output, track cost, update task.json            │
-│      6. On all-complete → _generate_cost_summary() → cost_summary.md │
+│  routers/aiweekly.py ── REST endpoints + one_shot execution engine      │
+│    _run_aiweekly_one_shot_stage():                                     │
+│      1. helpers.build_*_kwargs() ── build prompt + config               │
+│      2. _run_one_shot_sync(**kwargs) ── cmbagent.one_shot(researcher)   │
+│      3. Token-aware chunking + LLM merge for multi-chunk stages        │
+│      4. helpers.extract_stage_result() + save_stage_file()              │
+│      5. On all-complete → _generate_cost_summary() → cost_summary.md  │
 │                                                                       │
-│  _ConsoleCapture ── thread-safe stdout/stderr → REST console buffer   │
+│  _patch_solve_once() ── agent enforcement (prevents engineer override)  │
+│  _ConsoleCapture ── thread-safe stdout/stderr → REST console buffer    │
 └───────────┬──────────────────────────────┬────────────────────────────┘
             │                              │
             ▼                              ▼
@@ -173,28 +174,45 @@ Each stage follows the `AIWeeklyPhaseBase.execute()` pattern:
 
 ## 5. Phase-Based Execution Engine
 
-### `_run_aiweekly_stage()` in `backend/routers/aiweekly.py`
+### `_run_aiweekly_one_shot_stage()` in `backend/routers/aiweekly.py`
 
 ```python
-async def _run_aiweekly_stage(task_id, stage_num, task_text, work_dir, task_config, model, n_reviews):
-    # 1. Capture stdout/stderr for console streaming
-    # 2. Load phase class via importlib
-    # 3. Build shared state from prior completed stages
-    # 4. Create phase context
-    # 5. Execute with 900s timeout
-    # 6. Update DB with output + status
+async def _run_aiweekly_one_shot_stage(
+    task_id, stage_num, stage_def, task_config, work_dir, shared_state,
+    config_overrides, buf_key, callbacks
+):
+    # Stage 1: Direct Python data collection (no LLM)
+    # Stages 2-4: Build kwargs via helpers, run one_shot(agent='researcher')
+    #   Stage 2: Token-aware chunking + per-chunk curation + LLM merge
+    #   Stage 3: Analysis pass + generation per chunk + LLM merge
+    #   Stage 4: Critic pass + Editor pass + programmatic verification
+    # All stages: extract_stage_result() + save_stage_file() + update task.json
 ```
 
-### Phase Class Loading
+### Agent Enforcement
 
 ```python
-_PHASE_CLASSES = {
-    1: "cmbagent.phases.aiweekly.collection_phase:AIWeeklyCollectionPhase",
-    2: "cmbagent.phases.aiweekly.curation_phase:AIWeeklyCurationPhase",
-    3: "cmbagent.phases.aiweekly.generation_phase:AIWeeklyGenerationPhase",
-    4: "cmbagent.phases.aiweekly.review_phase:AIWeeklyReviewPhase",
-}
+# _patch_solve_once() in routers/aiweekly.py
+# Monkey-patches CMBAgent.solve to inject:
+#   current_instructions = "Use ONLY the researcher agent. Do NOT use the engineer."
+# This prevents cmbagent's control agent LLM from overriding agent_for_sub_task.
 ```
+
+### Helper Functions (`backend/task_framework/aiweekly_helpers.py`)
+
+| Function | Purpose |
+|---|---|
+| `build_curation_kwargs()` | Stage 2: build one_shot kwargs for curation |
+| `build_curation_merge_kwargs()` | Stage 2: merge multi-chunk curation results |
+| `build_generation_analysis_kwargs()` | Stage 3: structural analysis pass |
+| `build_generation_kwargs()` | Stage 3: report generation per chunk |
+| `build_generation_merge_kwargs()` | Stage 3: merge multi-chunk reports |
+| `build_review_critique_kwargs()` | Stage 4: critic pass (editorial audit) |
+| `build_review_kwargs()` | Stage 4: editor pass (apply corrections) |
+| `_get_chunk_budget(model)` | Token-aware chunk size calculation |
+| `split_collection_items()` | Split text into chunks at item boundaries |
+| `extract_stage_result()` | Extract markdown from one_shot chat history |
+| `programmatic_verification()` | URL/date/placeholder checks (Stage 4) |
 
 ---
 
@@ -298,14 +316,18 @@ AppShell (layout)
             │    ├── Steps 1–3: AIWeeklyReviewPanel.tsx
             │    └── Step 4: AIWeeklyReportPanel.tsx
             │
-            └── Right collapsible panel
-                 ├── Recent Tasks (dropdown — fetches from /api/aiweekly/recent)
-                 └── Start New Task (resets to setup view)
+            └── Right collapsible sessions panel (320px open, 40px collapsed)
+                 ├── Search bar + filter tabs (All/Running/Completed/Failed)
+                 ├── Task cards: status icon, stage info, date/time, progress bar
+                 │   • Completed tasks show "Completed" (not stage name)
+                 │   • Date/time shows actual timestamp (e.g. "Apr 30, 10:52 AM")
+                 └── Footer: total session count
 ```
 
 - **Default view:** Task setup panel (Step 0) loads immediately on app open
-- **Task switching:** Clicking a recent task swaps the main content component via React state (`resumeTaskId`)
+- **Task switching:** Clicking a task swaps the main content component via React state (`resumeTaskId`)
 - **No router navigation:** The `key` prop on `AIWeeklyReportTask` forces React to remount with fresh state
+- **API calls use relative URLs:** `fetch('/api/aiweekly/recent')` goes through Next.js proxy rewrite to backend
 
 ### Hook: `useAIWeeklyTask.ts`
 
@@ -333,7 +355,7 @@ Stage status is tracked via `GET /{id}` polling every 5 seconds.
 
 ## 12. Task Resumption
 
-The right collapsible panel contains a **"Recent Tasks"** dropdown. When clicked, it fetches `GET /api/aiweekly/recent` and shows a list of incomplete tasks with their current stage and progress. Clicking a task sets `resumeTaskId` in React state, which triggers `AIWeeklyReportTask` to remount and load the task at the correct wizard step.
+The right collapsible sessions panel is always visible. It fetches `GET /api/aiweekly/recent` (via relative URL through Next.js proxy) and shows task cards with status, stage info, date/time, and progress. Clicking a task sets `resumeTaskId` in React state, which triggers `AIWeeklyReportTask` to remount and load the task at the correct wizard step.
 
 `resumeTask(id)` in `useAIWeeklyTask.ts` loads task state via `GET /{id}`, finds the latest completed stage, and sets `currentStep` to the next wizard step.
 
@@ -341,12 +363,13 @@ The right collapsible panel contains a **"Recent Tasks"** dropdown. When clicked
 
 ## 13. Token Capacity Management
 
-Every LLM call in Stages 2–4 uses `chunk_prompt_if_needed()`:
+Stages 2–4 use token-aware chunking via `aiweekly_helpers.py`:
 
-1. Count tokens in system prompt + user prompt
-2. If total > `model_context × 0.75`, split user prompt into chunks
-3. Process each chunk separately, accumulate results
-4. Dynamic `max_completion_tokens` = `context_limit - prompt_tokens - safety_buffer`
+1. `_get_chunk_budget(model)` — calculates safe chunk size based on model context window
+2. `split_collection_items(text, target_chars)` — splits at item boundaries (not mid-item)
+3. Each chunk processed via separate `one_shot()` call
+4. Multi-chunk results merged via LLM merge pass (`curation_merge_prompt` or `merge_partials_prompt`)
+5. Default chunk target: ~60K chars (`_CHUNK_TARGET_CHARS`)
 
 ---
 
@@ -387,4 +410,4 @@ Each LLM call's token usage is tracked per-stage in the `output_data["cost"]` fi
 
 ## 17. Workflow Run Auto-Completion
 
-When the last stage completes, `_run_aiweekly_stage()` reloads the task from task.json and checks all stages. If all 4 are `"completed"`, the task status transitions to `"completed"` with a timestamp. Completed tasks still appear in `GET /api/aiweekly/recent` (the UI filters by status).
+When the last stage completes, `_run_aiweekly_one_shot_stage()` reloads the task from task.json and checks all stages. If all 4 are `"completed"`, the task status transitions to `"completed"` with a timestamp. Completed tasks appear in `GET /api/aiweekly/recent` (the sessions panel shows all tasks with search/filter).

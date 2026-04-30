@@ -41,7 +41,7 @@ export interface UseAIWeeklyTaskReturn {
         date_from: string; date_to: string
         topics: string[]; sources: string[]
         style: string
-        custom_sources?: { type: string; value: string }[]
+        custom_sources?: string[]
     }) => Promise<string>
     executeStage: (stageNum: number, taskId?: string) => Promise<void>
     fetchStageContent: (stageNum: number) => Promise<void>
@@ -84,7 +84,7 @@ export function useAIWeeklyTask(): UseAIWeeklyTaskReturn {
         date_from: string; date_to: string
         topics: string[]; sources: string[]
         style: string
-        custom_sources?: { type: string; value: string }[]
+        custom_sources?: string[]
     }) => {
         setIsLoading(true)
         setError(null)

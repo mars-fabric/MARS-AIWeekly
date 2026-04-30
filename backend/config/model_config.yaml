@@ -1,0 +1,38 @@
+# =============================================================================
+# AI Weekly Model Configuration
+# =============================================================================
+#
+# Extends the cmbagent model_config.yaml with aiweekly workflow defaults.
+# Changes take effect on backend restart (or call POST /api/models/reload).
+#
+# Environment variable overrides (applied on top at runtime):
+#   CMBAGENT_DEFAULT_MODEL         — global default for all unspecified roles
+#   CMBAGENT_RESEARCHER_MODEL      — researcher role
+#   CMBAGENT_ORCHESTRATION_MODEL   — orchestration / default_llm role
+#   CMBAGENT_FORMATTER_MODEL       — formatter role
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Per-workflow, per-stage model defaults for AI Weekly.
+# Stage numbers are string keys. "default" applies to all stages.
+# Merge order (highest wins): user config_overrides > stage-specific > "default" > global_defaults
+# ---------------------------------------------------------------------------
+workflow_defaults:
+
+  aiweekly:
+    default:  # Fallback for any stage without explicit config
+      researcher_model: "gpt-4.1-2025-04-14"
+      orchestration_model: "gpt-4.1-2025-04-14"
+      formatter_model: "o3-mini"
+    "2":  # Content Curation (researcher — fact-check & deduplicate)
+      researcher_model: "gpt-4.1-2025-04-14"
+      orchestration_model: "gpt-4.1-2025-04-14"
+      formatter_model: "o3-mini"
+    "3":  # Report Generation (researcher — structured writing)
+      researcher_model: "gpt-4.1-2025-04-14"
+      orchestration_model: "gpt-4.1-2025-04-14"
+      formatter_model: "o3-mini"
+    "4":  # Quality Review (researcher — edit, verify, polish)
+      researcher_model: "gpt-4.1-2025-04-14"
+      orchestration_model: "gpt-4.1-2025-04-14"
+      formatter_model: "o3-mini"

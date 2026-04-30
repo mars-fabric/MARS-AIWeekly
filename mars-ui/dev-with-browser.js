@@ -9,14 +9,14 @@ async function openUrl(url) {
 }
 
 // Start Next.js dev server
-const nextProcess = spawn('npx', ['next', 'dev'], {
+const nextProcess = spawn('npx', ['next', 'dev', '-p', '3022'], {
   stdio: 'inherit',
   shell: false,
 });
 
 // Open browser after a short delay to let the server start
 setTimeout(() => {
-  openUrl('http://localhost:3011').catch(() => { });
+  openUrl('http://localhost:3022').catch(() => { });
 }, 2000);
 
 // Handle process termination

@@ -34,14 +34,18 @@ export default function AIWeeklySetupPanel({ hook, onNext }: AIWeeklySetupPanelP
 
     const [dateFrom, setDateFrom] = useState(() => {
         const d = new Date(); d.setDate(d.getDate() - 7)
-        return d.toISOString().split('T')[0]
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
     })
-    const [dateTo, setDateTo] = useState(() => new Date().toISOString().split('T')[0])
+    const [dateTo, setDateTo] = useState(() => {
+        const d = new Date()
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    })
     const [topics, setTopics] = useState<string[]>(AVAILABLE_TOPICS.map(t => t.id))
     const [sources, setSources] = useState<string[]>([
         'github', 'press-releases', 'company-announcements', 'major-releases', 'curated-ai-websites',
     ])
     const [style, setStyle] = useState<'concise' | 'detailed' | 'technical'>('concise')
+    const [customSources, setCustomSources] = useState('')
     const [submitted, setSubmitted] = useState(false)
     const [showModelSettings, setShowModelSettings] = useState(false)
 
@@ -54,14 +58,19 @@ export default function AIWeeklySetupPanel({ hook, onNext }: AIWeeklySetupPanelP
     const handleSubmit = useCallback(async () => {
         if (!canSubmit) return
         setSubmitted(true)
+        const customSourcesList = customSources
+            .split(',')
+            .map(s => s.trim())
+            .filter(s => s.length > 0)
         const id = await createTask({
             date_from: dateFrom, date_to: dateTo, topics, sources, style,
+            custom_sources: customSourcesList.length > 0 ? customSourcesList : undefined,
         })
         if (id) {
             await executeStage(1, id)
         }
         onNext()
-    }, [canSubmit, dateFrom, dateTo, topics, sources, style, createTask, executeStage, onNext])
+    }, [canSubmit, dateFrom, dateTo, topics, sources, style, customSources, createTask, executeStage, onNext])
 
     const chipClass = (active: boolean) =>
         `px-3 py-1.5 rounded-mars-sm text-xs font-medium cursor-pointer transition-colors border ${active
@@ -120,6 +129,21 @@ export default function AIWeeklySetupPanel({ hook, onNext }: AIWeeklySetupPanelP
                         </button>
                     ))}
                 </div>
+            </div>
+
+            {/* Style */}
+            <div>
+                <label className="block text-sm font-medium mb-2" style={{ color: 'var(--mars-color-text)' }}>
+                    Custom Sources (optional)
+                </label>
+                <textarea
+                    value={customSources}
+                    onChange={e => setCustomSources(e.target.value)}
+                    placeholder="Comma-separated URLs (e.g. https://blog.example.com/feed, https://...)"
+                    rows={2}
+                    className="w-full rounded-mars-md border px-3 py-2 text-sm outline-none resize-none"
+                    style={{ backgroundColor: 'var(--mars-color-surface)', borderColor: 'var(--mars-color-border)', color: 'var(--mars-color-text)' }}
+                />
             </div>
 
             {/* Style */}

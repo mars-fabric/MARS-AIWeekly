@@ -44,12 +44,13 @@ The app runs as a **single-page application** (SPA) — all navigation happens v
 | Principle | Implementation |
 |---|---|
 | **Single-Page App** | All navigation via React state — only component swaps, no page reloads |
-| **Phase-Based Execution** | 4 discrete stages, each a `Phase` subclass |
-| **Hybrid Architecture** | Stage 1 = direct Python tool calls (no LLM). Stages 2–4 = LLM pipeline |
+| **Phase-Based Execution** | 4 discrete stages, each using `one_shot(agent='researcher')` via cmbagent |
+| **Hybrid Architecture** | Stage 1 = direct Python tool calls (no LLM). Stages 2–4 = one_shot LLM pipeline |
 | **Human-in-the-loop** | Users review, edit, and refine output between every stage |
-| **Token-safe** | Every LLM call uses `chunk_prompt_if_needed` with 0.75 safety margin |
+| **Token-safe** | Token-aware chunking via `_get_chunk_budget()` + `split_collection_items()` |
 | **Dynamic model** | Model resolved from config; user can override per-stage via UI |
-| **Multi-agent** | Stages 2–3 use 3-agent pipeline. Stage 4 uses generate + review only |
+| **Multi-pass** | Stage 2-3: chunk + merge. Stage 4: critic + editor |
+| **Agent enforcement** | Monkey-patch prevents cmbagent control agent from switching to engineer |
 | **Auto-completing** | Task status transitions to `"completed"` when all stages finish |
 | **Cost-transparent** | Per-stage cost tracking with aggregated USD totals |
 | **Resumable** | Tasks persist as JSON files and can resume after browser reload |
@@ -59,7 +60,7 @@ The app runs as a **single-page application** (SPA) — all navigation happens v
 | Layer | Technology |
 |---|---|
 | **Backend** | Python, FastAPI, asyncio |
-| **Phase System** | `AIWeeklyPhaseBase` → 4 phase subclasses |
+| **Execution Engine** | `cmbagent.one_shot(agent='researcher')` + helper functions |
 | **Data Collection** | `news_tools.py` — RSS feeds, NewsAPI, GNews, web search |
 | **Frontend** | React, TypeScript, Next.js (SPA) |
 | **Real-time** | REST polling (console output) |
@@ -71,7 +72,7 @@ The app runs as a **single-page application** (SPA) — all navigation happens v
 
 ### Stage 1: Data Collection (Non-LLM)
 
-**Class:** `AIWeeklyCollectionPhase`
+**Function:** `helpers.run_data_collection()`
 
 Runs all data collection tools directly in Python — no LLM involved:
 
@@ -88,16 +89,22 @@ Runs all data collection tools directly in Python — no LLM involved:
 
 ### Stage 2: Content Curation (LLM)
 
-**Class:** `AIWeeklyCurationPhase`
+**Function:** `helpers.build_curation_kwargs()` + `build_curation_merge_kwargs()`
+
+Token-aware chunking splits collection into safe-size chunks. Each chunk is curated via `one_shot(agent='researcher')`. Multi-chunk results are merged via LLM merge pass.
 
 Removes duplicates, validates dates, checks credibility, ensures diversity, groups by organization.
 
-**Specialist:** Fact-checking specialist.
 **Output:** `curated_items`.
 
 ### Stage 3: Report Generation (LLM)
 
-**Class:** `AIWeeklyGenerationPhase`
+**Function:** `helpers.build_generation_analysis_kwargs()` + `build_generation_kwargs()` + `build_generation_merge_kwargs()`
+
+Two-pass architecture:
+1. **Analysis pass:** Structural analysis of curated items
+2. **Generation pass:** Per-chunk report writing (uses analysis as guidance)
+3. **Merge pass:** If multi-chunk, LLM merges partial reports into unified draft
 
 Writes the full 4-section report from curated items:
 1. Executive Summary
@@ -105,14 +112,22 @@ Writes the full 4-section report from curated items:
 3. Trends & Strategic Implications
 4. Quick Reference Table
 
-**Specialist:** Business analyst.
 **Output:** `draft_report`.
 
 ### Stage 4: Quality Review (LLM)
 
-**Class:** `AIWeeklyReviewPhase`
+**Function:** `helpers.build_review_critique_kwargs()` + `helpers.build_review_kwargs()`
 
-Final polish with style-dependent expansion + programmatic verification (URL check, date check, placeholder detection, superlative detection, synthesis text removal).
+Two-pass architecture:
+1. **Critic pass:** Editorial audit that identifies specific corrections needed
+2. **Editor pass:** Applies all corrections + final polish for publication readiness
+
+After the LLM passes, runs **programmatic verification** — 5 deterministic checks:
+1. URL verification — marks inaccessible URLs
+2. Date verification — flags out-of-range dates
+3. Placeholder detection
+4. Superlative detection
+5. Synthesis text removal
 
 **Output:** `final_report`.
 
@@ -134,11 +149,15 @@ Final polish with style-dependent expansion + programmatic verification (URL che
 [Step 4: AIWeeklyReportPanel — final report preview + download artifacts]
 ```
 
-### Right Collapsible Panel
+### Right Collapsible Sessions Panel
 
-The right side of the app contains a collapsible panel with:
-- **Recent Tasks** — dropdown that fetches incomplete tasks; clicking one swaps the main content
-- **Start New Task** — resets to setup view
+The right side of the app contains a collapsible sessions panel (320px open, 40px collapsed) with:
+- **Search bar** — filter sessions by text
+- **Filter tabs** — All / Running / Completed / Failed
+- **Task cards** — status icon, stage info ("Completed" for finished tasks), date/time started, progress bar
+- **Footer** — total session count
+
+All API calls use relative URLs (`/api/aiweekly/recent`) through the Next.js proxy rewrite, enabling access from any hostname (not just localhost).
 
 All transitions happen via React state — no page reloads.
 
@@ -180,8 +199,9 @@ Files saved in `~/Desktop/cmbdir/aiweekly/{task_id[:8]}/input_files/`:
 | Technique | Where |
 |---|---|
 | **Multi-source aggregation** | Stage 1 — RSS, APIs, web search across 35+ feeds |
-| **Generate → Specialist → Review pipeline** | Stages 2–3 — 3 LLM calls per stage |
-| **Token chunking** | Every LLM call via `chunk_prompt_if_needed` |
+| **Token-aware chunking** | Stages 2–4 — `_get_chunk_budget()` + `split_collection_items()` |
+| **Multi-pass LLM** | Stage 2-3: chunk + merge. Stage 4: critic + editor |
+| **Agent enforcement** | Monkey-patch forces `researcher` agent (prevents `engineer` code gen) |
 | **Progressive context** | Each stage receives shared state from all prior stages |
 | **Refinement chat** | Real-time LLM refinement on any editable stage |
 | **Deduplication** | Python exact-match (Stage 1) + LLM semantic dedup (Stage 2) |
@@ -193,11 +213,15 @@ Files saved in `~/Desktop/cmbdir/aiweekly/{task_id[:8]}/input_files/`:
 ### Phase Class Hierarchy
 
 ```
-Phase (base)
-├── AIWeeklyCollectionPhase   (Stage 1 — no LLM)
-└── AIWeeklyPhaseBase         (Stages 2–4 — LLM pipeline)
-    ├── AIWeeklyCurationPhase
-    ├── AIWeeklyGenerationPhase
+cmbagent.one_shot(agent='researcher')
+  └── CMBAgent.solve (patched to enforce researcher)
+       └── control agent → researcher agent → output
+```
+
+Helper functions in `backend/task_framework/aiweekly_helpers.py`:
+- `build_curation_kwargs()` / `build_curation_merge_kwargs()`
+- `build_generation_analysis_kwargs()` / `build_generation_kwargs()` / `build_generation_merge_kwargs()`
+- `build_review_critique_kwargs()` / `build_review_kwargs()`
     └── AIWeeklyReviewPhase
 ```
 

@@ -109,7 +109,14 @@ Default: `~/Desktop/cmbdir/logs/backend.log`
 
 During stage execution, `_ConsoleCapture` in `routers/aiweekly.py` intercepts `sys.stdout` to buffer console output. Frontend polls `GET /{id}/stages/{N}/console?since=idx` every 2 seconds to display real-time progress.
 
-This is a lightweight, thread-safe capture mechanism specific to the AI Weekly pipeline — simpler than the full AG2 stdio capture used in the parent MARS project.
+This is a lightweight, thread-safe capture mechanism specific to the AI Weekly pipeline.
+
+Key logged events:
+- `"Running data collection (APIs, RSS, web search)..."` — Stage 1 start
+- `"Curating collection (N chunk(s), budget=X chars/chunk)..."` — Stage 2 chunking
+- `"Running critic pass (editorial audit)..."` — Stage 4 Pass A
+- `"Running one_shot for {stage_name}..."` — one_shot execution start
+- Agent enforcement patch (`_patch_solve_once`) logs via cmbagent's internal logger when forcing researcher agent
 
 ---
 

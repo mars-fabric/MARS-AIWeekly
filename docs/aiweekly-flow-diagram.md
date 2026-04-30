@@ -14,7 +14,7 @@
 │  2. Pick date range, topics, sources, style → Click "Collect Data"             │
 │  3. Review & edit each stage → Click "Next Stage"                              │
 │  4. Download final report (MD / PDF) + cost summary                            │
-│  5. Right panel: "Recent Tasks" dropdown to resume, "Start New Task" button    │
+│  5. Right panel: collapsible sessions panel with search/filter + task cards    │
 └───────┬─────────────────────────────────────────────────────────────────────────┘
         │
         ▼
@@ -36,12 +36,12 @@
 │                        BACKEND  (FastAPI / Python)                               │
 │                                                                                 │
 │  routers/aiweekly.py   ── 13 REST endpoints + execution engine                 │
-│    _run_aiweekly_stage():                                                       │
-│      1. _load_phase_class(stage_num) ── importlib dynamic load                 │
-│      2. PhaseClass(config=...)       ── instantiate phase                      │
-│      3. PhaseContext(task, work_dir, shared_state)                              │
-│      4. await phase.execute(ctx)     ── tool calls / LLM pipeline              │
-│      5. Extract output, track cost (in task.json), update task.json     │
+│    _run_aiweekly_one_shot_stage():                                              │
+│      1. helpers.build_*_kwargs() ── build prompt + config                      │
+│      2. _run_one_shot_sync(**kwargs) ── cmbagent.one_shot(agent='researcher')  │
+│      3. Token-aware chunking + LLM merge for multi-chunk stages                │
+│      4. helpers.extract_stage_result() ── extract markdown from chat history   │
+│      5. Track cost, save file, update task.json                                │
 │      6. On all-complete → _generate_cost_summary() → cost_summary.md           │
 │                                                                                 │
 │  _ConsoleCapture ── thread-safe stdout → REST console buffer                   │
@@ -54,10 +54,10 @@
 │  ~/Desktop/cmbdir/     │  │   Stage 1: RSS feeds, NewsAPI, GNews, web search    │
 │  aiweekly/{id}/        │  │            (no LLM — direct Python tool calls)      │
 │    task.json           │  │                                                     │
-│    input_files/        │  │   Stages 2–3: 3 LLM calls per stage                │
-│                        │  │     (Primary → Specialist → Reviewer)               │
-│                        │  │   Stage 4: 2 LLM calls (Primary → Reviewer)        │
-│                        │  │     = 8 LLM calls total + refinement (on-demand)    │
+│    input_files/        │  │   Stage 2: one_shot(researcher) per chunk + merge   │
+│                        │  │   Stage 3: analysis pass + generation + merge       │
+│                        │  │   Stage 4: critic pass + editor pass                │
+│                        │  │     All via cmbagent.one_shot(agent='researcher')   │
 └────────────────────────┘  └─────────────────────────────────────────────────────┘
 ```
 
@@ -125,7 +125,7 @@ FRONTEND (useAIWeeklyTask)        BACKEND (routers/aiweekly.py)      PHASE ENGIN
 ## 3. Stage 1 — Data Collection Pipeline (No LLM)
 
 ```
-AIWeeklyCollectionPhase.execute(context)
+helpers.run_data_collection()
  │
  │  TOOL CALLS (direct Python, no LLM):
  │    1. RSS feeds (30+ sources: OpenAI, Google, Meta, etc.)
@@ -144,21 +144,36 @@ AIWeeklyCollectionPhase.execute(context)
 
 ---
 
-## 4. Stages 2–4 — LLM Pipeline
+## 4. Stages 2–4 — LLM Pipeline (one_shot + multi-pass)
 
 ```
-AIWeeklyPhaseBase.execute(context)
+_run_aiweekly_one_shot_stage()
  │
- │  A. BUILD PROMPTS (system + user from shared_state + style_rule)
- │  B. TOKEN CAPACITY CHECK (chunk_prompt_if_needed)
- │
- ▼
- PASS 1: PRIMARY AGENT → draft content
- PASS 2: SPECIALIST AGENT (Stages 2–3 only) → improved content
- PASS 3: REVIEWER AGENT (11-point checklist) → polished content
+ │  Uses cmbagent.one_shot(agent='researcher') for all LLM stages.
+ │  Agent enforcement: CMBAgent.solve is monkey-patched to prevent the
+ │  control agent from switching to 'engineer'.
  │
  ▼
- Save to file + Return PhaseResult with output + cost
+ STAGE 2 (Content Curation):
+   A. _compact_collection_for_prompt() — trim raw collection
+   B. _get_chunk_budget(model) — token-aware chunk size (default ~60K chars)
+   C. split_collection_items() → N chunks
+   D. one_shot per chunk → partial curated outputs
+   E. If multi-chunk: LLM merge pass (curation_merge_prompt) → unified output
+
+ STAGE 3 (Report Generation):
+   A. Analysis pass: one_shot on curated_items → structural analysis
+   B. Generation pass: one_shot per chunk (analysis + curated) → partial reports
+   C. If multi-chunk: LLM merge pass (merge_partials_prompt) → unified draft
+
+ STAGE 4 (Quality Review):
+   A. Critic pass: one_shot → editorial audit (identifies corrections)
+   B. Editor pass: one_shot (draft + critique) → polished final report
+   C. Programmatic verification: URL check, date check, placeholder/superlative detection
+ │
+ ▼
+ helpers.extract_stage_result() → markdown from chat history
+ helpers.save_stage_file() → save to work_dir
 ```
 
 ---
@@ -187,8 +202,14 @@ Cost data embedded in each stage's output_data["cost"]
 ## 7. Task Resumption Flow
 
 ```
-USER clicks "Recent Tasks" in right panel
-  → GET /api/aiweekly/recent → dropdown list
+USER sees right collapsible sessions panel (always visible)
+  → Sessions fetched via relative URL: fetch('/api/aiweekly/recent')
+    (goes through Next.js proxy to backend)
+  → Panel shows task cards with:
+    - Status icon (green check for completed, spinner for running)
+    - Stage info ("Completed" for finished tasks, "Stage N: Name" otherwise)
+    - Actual date/time started (e.g. "Apr 30, 10:52 AM")
+    - Progress bar with percentage
   → Click task → component swap (no reload)
   → GET /api/aiweekly/{id} → wizard jumps to correct step
 ```

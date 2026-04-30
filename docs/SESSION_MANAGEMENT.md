@@ -10,9 +10,10 @@ The AI Weekly app uses a simplified session management system focused on task pe
 
 Key capabilities:
 - **Task persistence:** Tasks stored as JSON files in `~/Desktop/cmbdir/aiweekly/`
-- **Resumable:** Incomplete tasks appear in the right-panel "Recent Tasks" dropdown
+- **Resumable:** All tasks (including completed) appear in the right sessions panel
 - **Cost tracking:** Per-stage cost tracked in task.json output_data
-- **Auto-cleanup:** Completed tasks auto-transition and are removed from the recent list
+- **Sessions panel:** Collapsible right panel with search, filter tabs, and task cards
+- **Relative URLs:** Frontend uses `/api/aiweekly/recent` through Next.js proxy (works from any hostname)
 
 ---
 
@@ -134,14 +135,22 @@ The AI Weekly router (`routers/aiweekly.py`) provides task-specific lifecycle ma
 ### How Resumption Works
 
 ```
-User clicks "Recent Tasks" in right panel
+Right collapsible sessions panel (always visible, 320px open / 40px collapsed)
     │
     ▼
-GET /api/aiweekly/recent
-    → Returns incomplete tasks with stage/progress info
+fetch('/api/aiweekly/recent')  (relative URL through Next.js proxy)
+    → Returns all tasks with stage/progress info
     │
     ▼
-User clicks a task in the dropdown
+Sessions panel shows task cards:
+    • Status icon (green check / spinner / red X)
+    • Stage info: "Completed" for finished, "Stage N: Name" otherwise
+    • Actual date/time started (e.g. "Apr 30, 10:52 AM")
+    • Progress bar with percentage
+    • Delete button (hover)
+    │
+    ▼
+User clicks a task card
     │
     ▼
 React state update: resumeTaskId = task.task_id
@@ -160,7 +169,7 @@ Wizard displays at correct step
 
 Key points:
 - **No page reload** — component swap via React state
-- **URL deep-link support** — `?resume=<task_id>` query param sets initial state
+- **Search & filter** — sessions panel has search bar + filter tabs (All/Running/Completed/Failed)
 - **Running stages reconnect** — if a stage is still running, console polling resumes
 
 ---
