@@ -1335,33 +1335,51 @@ async def save_aiweekly_stage_content(task_id: str, stage_num: int, request: AIW
 
 @router.post("/{task_id}/stages/{stage_num}/refine", response_model=AIWeeklyRefineResponse)
 async def refine_aiweekly_content(task_id: str, stage_num: int, request: AIWeeklyRefineRequest):
-    """LLM refinement of stage content."""
-    from cmbagent.llm_provider import safe_completion
-    from backend.task_framework.token_utils import count_tokens, get_model_limits
+    """LLM refinement of stage content via diff patching with safe fallback."""
+    from services.diff_patcher import refine_with_diff
+    from backend.task_framework.utils import extract_clean_markdown
 
     model = _get_default_model()
-    max_ctx, _ = get_model_limits(model)
-    system_msg = "You are an AI news editor. Refine the content based on the instruction. Return ONLY the refined markdown."
-    user_msg = f"Current content:\n\n{request.content}\n\n---\n\nInstruction: {request.message}"
 
-    prompt_tokens = count_tokens(system_msg, model) + count_tokens(user_msg, model) + 6
-    available = max_ctx - prompt_tokens - 200
-    max_comp = min(16384, max(available, 4096))
-
-    def _call():
+    def _llm_call(messages, model, temperature, max_tokens):
+        from cmbagent.llm_provider import safe_completion
         return safe_completion(
-            messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg},
-            ],
+            messages=messages,
             model=model,
-            temperature=0.7,
-            max_tokens=max_comp,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
 
-    refined = await asyncio.to_thread(_call)
-    refined = refined or request.content
-    return AIWeeklyRefineResponse(refined_content=refined, message="Content refined successfully")
+    result = await asyncio.to_thread(
+        refine_with_diff,
+        request.content,
+        request.message,
+        llm_call=_llm_call,
+        model=model,
+        temperature=0.4,
+        fallback_temperature=0.7,
+    )
+
+    refined = extract_clean_markdown(result.content or "").strip()
+    if not refined:
+        refined = request.content
+
+    edits_applied = len(result.applied)
+    edits_failed = len(result.failed)
+    if result.method == "diff":
+        message = f"Applied {edits_applied} edit(s) via diff patching"
+        if edits_failed:
+            message += f" ({edits_failed} edit(s) could not be located)"
+    else:
+        message = "Content refined via full-document rewrite (diff patching was not possible)"
+
+    return AIWeeklyRefineResponse(
+        refined_content=refined,
+        message=message,
+        method=result.method,
+        edits_applied=edits_applied,
+        edits_failed=edits_failed,
+    )
 
 
 @router.get("/{task_id}/stages/{stage_num}/console")
@@ -1464,6 +1482,51 @@ async def download_aiweekly_artifact(task_id: str, filename: str):
     )
 
 
+def _expand_generic_markdown_links(md_text: str) -> str:
+    """Make generic markdown links more robust for PDF readers.
+
+    Some PDF renderers preserve the anchor text but not clickable metadata.
+    For generic link labels like "Link" or "Source", append the raw URL so
+    users still get a usable link target in exported PDFs.
+    """
+    generic_labels = {"link", "source", "url", "ref"}
+
+    def _repl(match: re.Match) -> str:
+        label = (match.group(1) or "").strip()
+        url = (match.group(2) or "").strip()
+        if label.lower() in generic_labels:
+            return f"[{label}]({url}) ({url})"
+        return match.group(0)
+
+    return re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", _repl, md_text)
+
+
+def _add_pdf_url_annotations(pdf_path: str) -> None:
+    """Add clickable URI annotations for any visible URL text in the PDF."""
+    import fitz
+
+    url_re = re.compile(r'https?://[^\s)\]>"\']+')
+    doc = fitz.open(pdf_path)
+    modified = False
+    try:
+        for page in doc:
+            page_text = page.get_text("text") or ""
+            urls = list(dict.fromkeys(url_re.findall(page_text)))
+            for url in urls:
+                for rect in page.search_for(url):
+                    page.insert_link({
+                        "kind": fitz.LINK_URI,
+                        "from": rect,
+                        "uri": url,
+                    })
+                    modified = True
+
+        if modified:
+            doc.save(pdf_path, incremental=False, encryption=fitz.PDF_ENCRYPT_KEEP)
+    finally:
+        doc.close()
+
+
 def _md_to_pdf(md_path: str, pdf_path: str) -> None:
     """Convert a markdown file to PDF using markdown + PyMuPDF."""
     import markdown
@@ -1472,9 +1535,11 @@ def _md_to_pdf(md_path: str, pdf_path: str) -> None:
     with open(md_path, "r", encoding="utf-8") as f:
         md_text = f.read()
 
+    md_text = _expand_generic_markdown_links(md_text)
+
     html_body = markdown.markdown(
         md_text,
-        extensions=["tables", "fenced_code", "toc"],
+        extensions=["extra", "tables", "fenced_code", "toc", "sane_lists", "nl2br"],
     )
 
     html = f"""<!DOCTYPE html>
@@ -1486,7 +1551,7 @@ h3 {{ font-size: 13pt; margin-top: 10pt; margin-bottom: 4pt; }}
 table {{ border-collapse: collapse; width: 100%; margin: 10pt 0; table-layout: fixed; }}
 th, td {{ border: 1px solid #ccc; padding: 6px 8px; text-align: left; font-size: 9pt; word-wrap: break-word; overflow-wrap: break-word; }}
 th {{ background-color: #f2f2f2; font-weight: bold; }}
-a {{ color: #1a73e8; word-break: break-all; }}
+a {{ color: #1a73e8; text-decoration: underline; word-break: break-all; }}
 ul, ol {{ padding-left: 18pt; }}
 pre, code {{ font-size: 9pt; word-wrap: break-word; overflow-wrap: break-word; white-space: pre-wrap; }}
 </style></head><body>{html_body}</body></html>"""
@@ -1501,6 +1566,7 @@ pre, code {{ font-size: 9pt; word-wrap: break-word; overflow-wrap: break-word; w
     writer = fitz.DocumentWriter(pdf_path)
     story.write(writer, rectfn)
     writer.close()
+    _add_pdf_url_annotations(pdf_path)
 
 
 @router.get("/{task_id}/download-pdf/{filename}")

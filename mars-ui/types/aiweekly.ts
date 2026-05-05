@@ -27,6 +27,9 @@ export interface AIWeeklyCreateResponse {
 export interface AIWeeklyRefineResponse {
     refined_content: string
     message: string
+    method?: 'diff' | 'fallback'
+    edits_applied?: number
+    edits_failed?: number
 }
 
 export interface AIWeeklyRefinementMessage {
@@ -34,6 +37,10 @@ export interface AIWeeklyRefinementMessage {
     role: 'user' | 'assistant'
     content: string
     timestamp: number
+    original_content?: string
+    method?: 'diff' | 'fallback'
+    edits_applied?: number
+    edits_failed?: number
 }
 
 export const AIWEEKLY_STAGE_NAMES: Record<number, string> = {

@@ -225,7 +225,16 @@ export function useAIWeeklyTask(): UseAIWeeklyTaskReturn {
                 method: 'POST',
                 body: JSON.stringify({ message, content }),
             })
-            setRefinementMessages(prev => [...prev, { id: (crypto.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36)), role: 'assistant', content: resp.refined_content, timestamp: Date.now() }])
+            setRefinementMessages(prev => [...prev, {
+                id: (crypto.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36)),
+                role: 'assistant',
+                content: resp.refined_content,
+                timestamp: Date.now(),
+                original_content: content,
+                method: resp.method,
+                edits_applied: resp.edits_applied,
+                edits_failed: resp.edits_failed,
+            }])
             return resp.refined_content
         } catch (e: any) {
             setError(e.message)

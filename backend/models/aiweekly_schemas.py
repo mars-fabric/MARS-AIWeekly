@@ -58,6 +58,9 @@ class AIWeeklyRefineRequest(BaseModel):
 class AIWeeklyRefineResponse(BaseModel):
     refined_content: str
     message: str
+    method: Optional[str] = None
+    edits_applied: Optional[int] = None
+    edits_failed: Optional[int] = None
 
 
 class AIWeeklyTaskStateResponse(BaseModel):

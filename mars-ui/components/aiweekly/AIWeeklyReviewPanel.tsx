@@ -65,9 +65,24 @@ export default function AIWeeklyReviewPanel({
     }, [refineContent, stageNum, editableContent])
 
     const handleApply = useCallback((content: string) => {
+        const originalLen = editableContent.length
+        const refinedLen = content.length
+
+        // Guard against accidental partial refinements that would overwrite
+        // a full draft with only a short fragment.
+        if (originalLen > 200 && refinedLen < originalLen * 0.4) {
+            const confirmed = window.confirm(
+                `The refined content is much shorter than the original ` +
+                `(${refinedLen} vs ${originalLen} characters).\n\n` +
+                `The AI may have returned only the changed portion instead of the full document. ` +
+                `Apply anyway?`
+            )
+            if (!confirmed) return
+        }
+
         setEditableContent(content)
         if (canEdit) saveStageContent(stageNum, content, sharedKey)
-    }, [setEditableContent, canEdit, saveStageContent, stageNum, sharedKey])
+    }, [editableContent, setEditableContent, canEdit, saveStageContent, stageNum, sharedKey])
 
     const handleNext = useCallback(async () => {
         if (canEdit) {
