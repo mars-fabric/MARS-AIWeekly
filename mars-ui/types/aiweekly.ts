@@ -78,7 +78,7 @@ export const AIWEEKLY_STAGE_SHARED_KEYS: Record<number, string> = {
 
 export type AIWeeklyWizardStep = 0 | 1 | 2 | 3 | 4
 
-/** Model option for the AI Weekly model selectors (reuses deepresearch list). */
+/** Model option for the AI Weekly model selectors (reuses modelOptions list). */
 export interface AIWeeklyModelOption {
     value: string
     label: string
@@ -86,18 +86,17 @@ export interface AIWeeklyModelOption {
 
 /** Available models for AI Weekly stages. */
 export const AIWEEKLY_AVAILABLE_MODELS: AIWeeklyModelOption[] = [
-    { value: 'gpt-4.1-2025-04-14', label: 'GPT-4.1' },
-    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
-    { value: 'gpt-4o', label: 'GPT-4o' },
-    { value: 'gpt-4o-mini-2024-07-18', label: 'GPT-4o Mini' },
-    { value: 'gpt-4.5-preview-2025-02-27', label: 'GPT-4.5 Preview' },
-    { value: 'gpt-5-2025-08-07', label: 'GPT-5' },
-    { value: 'o3-mini-2025-01-31', label: 'o3-mini' },
-    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-    { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
-    { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-    { value: 'claude-3.5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
+    { value: 'gpt-5.1-2025-11-13', label: 'GPT-5.1 (Azure)' },
+    { value: 'gpt-4o', label: 'GPT-4o (Azure)' },
+    { value: 'bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0', label: 'Claude Haiku 4.5 (Bedrock)' },
+    { value: 'bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0', label: 'Claude Sonnet 4.5 (Bedrock)' },
+    { value: 'bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0', label: 'Claude Sonnet 4 (Bedrock)' },
+    { value: 'bedrock/anthropic.claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Bedrock)' },
+    { value: 'bedrock/amazon.nova-lite-v1:0', label: 'Amazon Nova Lite (Bedrock)' },
+    { value: 'bedrock/amazon.nova-pro-v1:0', label: 'Amazon Nova Pro (Bedrock)' },
+    { value: 'bedrock/us.meta.llama4-scout-17b-instruct-v1:0', label: 'Llama 4 Scout 17B (Bedrock)' },
+    { value: 'bedrock/us.meta.llama3-3-70b-instruct-v1:0', label: 'Llama 3.3 70B (Bedrock)' },
+    { value: 'bedrock/mistral.mistral-large-2402-v1:0', label: 'Mistral Large (Bedrock)' },
 ]
 
 /** Config overrides for AI Weekly LLM stages (Stages 2-4). */

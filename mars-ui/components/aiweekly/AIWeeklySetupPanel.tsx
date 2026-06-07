@@ -189,55 +189,20 @@ export default function AIWeeklySetupPanel({ hook, onNext }: AIWeeklySetupPanelP
                 </button>
                 {showModelSettings && (
                     <div className="px-4 py-3 space-y-3 border-t" style={{ borderColor: 'var(--mars-color-border)' }}>
-                        <p className="text-xs" style={{ color: 'var(--mars-color-text-secondary)' }}>
-                            Configure LLM models for Stages 2–4 (Data Collection uses no LLM).
-                        </p>
-                        {/* Primary Model */}
-                        <div>
+                            <div>
                             <label className="block text-xs font-medium mb-1" style={{ color: 'var(--mars-color-text)' }}>
-                                Primary Model (Generation)
+                                Select Model
                             </label>
                             <select
                                 value={stageConfig.model || ''}
-                                onChange={e => setStageConfig({ ...stageConfig, model: e.target.value || undefined })}
+                                onChange={e => {
+                                    const v = e.target.value || undefined
+                                    setStageConfig({ ...stageConfig, model: v, review_model: v, specialist_model: v })
+                                }}
                                 className="w-full rounded-mars-sm border px-2 py-1.5 text-sm outline-none"
                                 style={{ backgroundColor: 'var(--mars-color-surface)', borderColor: 'var(--mars-color-border)', color: 'var(--mars-color-text)' }}
                             >
                                 <option value="">Default (gpt-4o)</option>
-                                {availableModels.map(m => (
-                                    <option key={m.value} value={m.value}>{m.label}</option>
-                                ))}
-                            </select>
-                        </div>
-                        {/* Review Model */}
-                        <div>
-                            <label className="block text-xs font-medium mb-1" style={{ color: 'var(--mars-color-text)' }}>
-                                Review Model (Quality Check)
-                            </label>
-                            <select
-                                value={stageConfig.review_model || ''}
-                                onChange={e => setStageConfig({ ...stageConfig, review_model: e.target.value || undefined })}
-                                className="w-full rounded-mars-sm border px-2 py-1.5 text-sm outline-none"
-                                style={{ backgroundColor: 'var(--mars-color-surface)', borderColor: 'var(--mars-color-border)', color: 'var(--mars-color-text)' }}
-                            >
-                                <option value="">Same as Primary</option>
-                                {availableModels.map(m => (
-                                    <option key={m.value} value={m.value}>{m.label}</option>
-                                ))}
-                            </select>
-                        </div>
-                        {/* Specialist Model */}
-                        <div>
-                            <label className="block text-xs font-medium mb-1" style={{ color: 'var(--mars-color-text)' }}>
-                                Specialist Model (Fact-Check)
-                            </label>
-                            <select
-                                value={stageConfig.specialist_model || ''}
-                                onChange={e => setStageConfig({ ...stageConfig, specialist_model: e.target.value || undefined })}
-                                className="w-full rounded-mars-sm border px-2 py-1.5 text-sm outline-none"
-                                style={{ backgroundColor: 'var(--mars-color-surface)', borderColor: 'var(--mars-color-border)', color: 'var(--mars-color-text)' }}
-                            >
-                                <option value="">Same as Primary</option>
                                 {availableModels.map(m => (
                                     <option key={m.value} value={m.value}>{m.label}</option>
                                 ))}

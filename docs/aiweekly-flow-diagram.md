@@ -1,6 +1,7 @@
 # AI Weekly Report Generator — Complete Flow Diagram
 
 > Standalone AI Weekly Report Generator — all flow diagrams for the 4-stage pipeline.
+> Last updated: June 2026
 
 ---
 
@@ -33,7 +34,7 @@
         │ REST API (HTTP)
         ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                        BACKEND  (FastAPI / Python)                               │
+│                        BACKEND  (FastAPI / Python)                  [UPDATED]   │
 │                                                                                 │
 │  routers/aiweekly.py   ── 13 REST endpoints + execution engine                 │
 │    _run_aiweekly_one_shot_stage():                                              │
@@ -44,19 +45,31 @@
 │      5. Track cost, save file, update task.json                                │
 │      6. On all-complete → _generate_cost_summary() → cost_summary.md           │
 │                                                                                 │
+│  Stage 1: LangGraph pipeline (NewsCollectionState TypedDict, 15 nodes)         │
+│    OLD: direct Python tool calls in a flat helper function                     │
+│                                                                                 │
+│  Stage 4: PATCH MODE editor (copies highlights, only patches flagged items)    │
+│    OLD: editor rewrote the full report from scratch                             │
+│                                                                                 │
+│  PDF generation: WeasyPrint (MD → HTML+CSS → PDF)                             │
+│    OLD: fpdf2 library                                                           │
+│                                                                                 │
 │  _ConsoleCapture ── thread-safe stdout → REST console buffer                   │
 └───────┬──────────────────────────────┬──────────────────────────────────────────┘
         │                              │
         ▼                              ▼
 ┌────────────────────────┐  ┌─────────────────────────────────────────────────────┐
-│  FILE SYSTEM (JSON)    │  │   EXTERNAL APIs / LLM                               │
+│  FILE SYSTEM (JSON)    │  │   EXTERNAL APIs / LLM                   [UPDATED]   │
 │                        │  │                                                     │
-│  ~/Desktop/cmbdir/     │  │   Stage 1: RSS feeds, NewsAPI, GNews, web search    │
-│  aiweekly/{id}/        │  │            (no LLM — direct Python tool calls)      │
-│    task.json           │  │                                                     │
-│    input_files/        │  │   Stage 2: one_shot(researcher) per chunk + merge   │
+│  ~/Desktop/cmbdir/     │  │   Stage 1: LangGraph pipeline — 15 nodes            │
+│  aiweekly/{id}/        │  │            RSS (26 feeds), company scrape,          │
+│    task.json           │  │            DDGS.news(), NewsAPI, GNews, arxiv,      │
+│    input_files/        │  │            web_surfer, perplexity, dedup            │
+│                        │  │            (no LLM — pure Python tool calls)        │
+│                        │  │                                                     │
+│                        │  │   Stage 2: one_shot(researcher) per chunk + merge   │
 │                        │  │   Stage 3: analysis pass + generation + merge       │
-│                        │  │   Stage 4: critic pass + editor pass                │
+│                        │  │   Stage 4: critic pass + PATCH MODE editor          │
 │                        │  │     All via cmbagent.one_shot(agent='researcher')   │
 └────────────────────────┘  └─────────────────────────────────────────────────────┘
 ```
@@ -122,29 +135,113 @@ FRONTEND (useAIWeeklyTask)        BACKEND (routers/aiweekly.py)      PHASE ENGIN
 
 ---
 
-## 3. Stage 1 — Data Collection Pipeline (No LLM)
+## 3. Stage 1 — Data Collection Pipeline (LangGraph)  [UPDATED]
+
+> OLD implementation: a flat `helpers.run_data_collection()` function that called
+> Python tools directly in sequence. No graph, no typed state, ~6 tool categories.
+>
+> NEW implementation: a LangGraph pipeline. State flows through a
+> `NewsCollectionState` TypedDict across 15 nodes. The `company_ddg_news` node
+> is new. RSS feed count increased from 18 to 26.
 
 ```
-helpers.run_data_collection()
- │
- │  TOOL CALLS (direct Python, no LLM):
- │    1. RSS feeds (30+ sources: OpenAI, Google, Meta, etc.)
- │    2. curated_ai_sources_search(limit=60)
- │    3. newsapi_search()        (if NEWSAPI_KEY set)
- │    4. gnews_search()          (if GNEWS_API_KEY set)
- │    5. multi_engine_web_search (DDG→Bing→Yahoo→Brave)
- │    6. Per-company web searches for 19 priority companies
- │
- │  Date filtering + Deduplication by (url, title[:80])
- │
- │  Output: raw_collection (markdown)
- │  Cost: $0.0000 (no LLM calls)
- │  Save to: input_files/collection.json + collection.md
+LangGraph pipeline — NewsCollectionState TypedDict, 15 nodes, no LLM calls
+
+  broad_sweep
+      │
+      ▼
+  curated_sources
+      │
+      ▼
+  company_scrape
+      │
+      ▼
+  company_ddg_news   ◄── NEW node (DDGS.news(), no API key required)
+      │
+      ▼
+  newsapi_gnews
+      │
+      ▼
+  rss_feeds
+      │
+      ▼
+  custom_sources
+      │
+      ▼
+  topic_arxiv_search
+      │
+      ▼
+  topic_web_search
+      │
+      ▼
+  web_surfer_agent
+      │
+      ▼
+  perplexity_agent
+      │
+      ▼
+  gap_fill
+      │
+      ▼
+  date_validate
+      │
+      ▼
+  semantic_dedup
+      │
+      ▼
+  END
+      │
+      ▼
+  Output: collection.json + collection.md
+  Cost: $0.0000 (no LLM calls)
+```
+
+### Node Descriptions
+
+```
+  broad_sweep        cmbagent announcements_noauth(), full sweep
+
+  curated_sources    cmbagent curated_ai_sources_search(), per topic
+
+  company_scrape     cmbagent scrape_official_news_pages(), 15 companies
+
+  company_ddg_news   DDGS.news() for each of 15 companies               [NEW]
+  (NEW)              — OpenAI, NVIDIA, Google, Meta, Microsoft, etc.
+                     — no API key required; reliable company news
+
+  newsapi_gnews      NewsAPI + GNews (requires NEWSAPI_KEY / GNEWS_API_KEY)
+
+  rss_feeds          26 global feeds (AI news + arXiv + company blogs)  [UPDATED]
+                     OLD: 18 feeds
+                     NEW additions: NVIDIA, Meta AI, Microsoft AI,
+                       DeepMind, Apple ML, Mistral, AWS ML, IBM Research
+
+  custom_sources     user-provided URLs / RSS feeds
+
+  topic_arxiv_search arxiv.Client() direct API, 25 papers per topic
+
+  topic_web_search   DDGS.news(): 2 queries/topic + 1 general sweep
+
+  web_surfer_agent   cmbagent web_surfer (requires BING_API_KEY)
+
+  perplexity_agent   cmbagent perplexity (requires PERPLEXITY_API_KEY)
+
+  gap_fill           re-search topics with <5 items, max 2 rounds
+
+  date_validate      strict date range filter
+
+  semantic_dedup     difflib ratio >0.82 dedup
 ```
 
 ---
 
-## 4. Stages 2–4 — LLM Pipeline (one_shot + multi-pass)
+## 4. Stages 2–4 — LLM Pipeline (one_shot + multi-pass)  [UPDATED]
+
+> Stage 4 editor is now in PATCH MODE.
+> OLD: editor rewrote the full report, which risked output-token-limit truncation.
+> NEW: editor copies all existing highlights exactly unless the critic flagged them,
+>      then patches only the flagged items. report_final.md is always >= report_draft.md
+>      in content length.
 
 ```
 _run_aiweekly_one_shot_stage()
@@ -166,10 +263,15 @@ _run_aiweekly_one_shot_stage()
    B. Generation pass: one_shot per chunk (analysis + curated) → partial reports
    C. If multi-chunk: LLM merge pass (merge_partials_prompt) → unified draft
 
- STAGE 4 (Quality Review):
-   A. Critic pass: one_shot → editorial audit (identifies corrections)
-   B. Editor pass: one_shot (draft + critique) → polished final report
-   C. Programmatic verification: URL check, date check, placeholder/superlative detection
+ STAGE 4 (Quality Review):  [UPDATED — PATCH MODE]
+   A. Critic pass: one_shot → editorial audit (identifies flagged items)
+   B. Editor pass (PATCH MODE):
+        - Copy all existing highlights exactly unless critic flagged them
+        - Patch only flagged items (no full rewrite)
+        - Guarantees report_final.md >= report_draft.md in content
+      OLD: editor rewrote the full report from scratch (caused truncation risk)
+   C. Programmatic verification: URL check, date check,
+      placeholder/superlative detection
  │
  ▼
  helpers.extract_stage_result() → markdown from chat history
@@ -178,14 +280,32 @@ _run_aiweekly_one_shot_stage()
 
 ---
 
-## 5. Shared State Accumulation
+## 5. Shared State Accumulation  [UPDATED]
+
+> The state artifacts are the same as before. The flow diagram below now reflects
+> the addition of review_critique.md in Stage 4 and cost_summary.md at completion.
 
 ```
-Stage 1 → raw_collection
-Stage 2 reads {raw_collection, task_config} → curated_items
-Stage 3 reads {raw_collection, curated_items, task_config} → draft_report
-Stage 4 reads {all prior + task_config} → final_report
-ALL done → task status "completed" + cost_summary.md
+Stage 1: raw_collection
+            collection.json + collection.md
+            │
+            ▼
+Stage 2: reads {raw_collection, task_config}
+            → curated_items (curated.md)
+            [+ report_outline.md if multi-chunk]
+            │
+            ▼
+Stage 3: reads {raw_collection, curated_items, task_config}
+            → draft_report (report_draft.md)
+            [+ report_outline.md]
+            │
+            ▼
+Stage 4: reads {all prior + task_config}
+            → final_report (report_final.md)   [PATCH MODE — always >= draft]
+            [+ review_critique.md]
+            │
+            ▼
+ALL DONE: cost_summary.md
 ```
 
 ---
@@ -216,7 +336,12 @@ USER sees right collapsible sessions panel (always visible)
 
 ---
 
-## 8. API Endpoint Quick Reference
+## 8. API Endpoint Quick Reference  [UPDATED]
+
+> Endpoint 12 (download-pdf) now uses WeasyPrint (MD → HTML+CSS → PDF).
+> OLD: fpdf2. The endpoint also applies a smart fallback: if report_final.md
+> is less than 1.5× the size of report_draft.md (indicating possible truncation),
+> the PDF is generated from report_draft.md instead.
 
 | # | Method | Path | Description |
 |---|--------|------|-------------|
@@ -231,20 +356,43 @@ USER sees right collapsible sessions panel (always visible)
 | 9 | POST | `/api/aiweekly/{id}/reset-from/{N}` | Reset stages N+ |
 | 10 | POST | `/api/aiweekly/{id}/stop` | Cancel running stage |
 | 11 | GET | `/api/aiweekly/{id}/download/{file}` | Download artifact |
-| 12 | GET | `/api/aiweekly/{id}/download-pdf/{file}` | Download as PDF |
+| 12 | GET | `/api/aiweekly/{id}/download-pdf/{file}?inline=true` | Download as PDF (WeasyPrint) [UPDATED] |
 | 13 | DELETE | `/api/aiweekly/{id}` | Delete task + files |
+
+### PDF Download Detail  [UPDATED]
+
+```
+GET /api/aiweekly/{id}/download-pdf/{filename}?inline=true
+
+  1. Read {filename} (e.g. report_final.md) from work_dir
+  2. Smart fallback check:
+       if report_final.md < 1.5× size of report_draft.md
+           → use report_draft.md instead
+             (guards against Stage 4 truncation)
+  3. MD → HTML with CSS:
+       - word-break: break-all on <pre> and <a> tags
+         (handles long URLs and code blocks)
+  4. WeasyPrint renders HTML+CSS → PDF bytes
+  5. Return PDF with Content-Disposition: inline (or attachment)
+
+  OLD: fpdf2 rendered plain text directly to PDF (no CSS, no HTML)
+```
 
 ---
 
-## 9. Output Files
+## 9. Output Files  [UPDATED]
+
+> review_critique.md is now explicitly saved as a Stage 4 artifact.
 
 ```
 {work_dir}/input_files/
 ├── task_config.json       # User configuration
-├── collection.json        # Stage 1: structured JSON
+├── collection.json        # Stage 1: structured JSON (LangGraph output)
 ├── collection.md          # Stage 1: markdown summary
 ├── curated.md             # Stage 2: curated items
+├── report_outline.md      # Stage 2/3: outline (multi-chunk runs only)
 ├── report_draft.md        # Stage 3: draft report
-├── report_final.md        # Stage 4: final report
+├── review_critique.md     # Stage 4: critic pass output        [NEW artifact]
+├── report_final.md        # Stage 4: final report (PATCH MODE — always >= draft)
 └── cost_summary.md        # Auto-generated cost breakdown
 ```

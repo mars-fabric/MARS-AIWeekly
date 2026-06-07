@@ -9,14 +9,14 @@
  *   workflowDefaults — per-workflow, per-stage model defaults
  *   isLoading        — true on first fetch
  *
- * Falls back to the static AVAILABLE_MODELS from types/deepresearch.ts
+ * Falls back to the static AVAILABLE_MODELS from types/modelOptions.ts
  * if the API is unavailable (e.g. during SSR or backend down).
  *
  * Module-level cache ensures a single fetch per browser session.
  */
 
 import { useState, useEffect } from 'react'
-import { AVAILABLE_MODELS as STATIC_FALLBACK } from '@/types/deepresearch'
+import { AVAILABLE_MODELS as STATIC_FALLBACK } from '@/types/modelOptions'
 
 export interface ModelOption {
   value: string
@@ -65,7 +65,7 @@ export function useModelConfig() {
   }, [])
 
   return {
-    availableModels: config?.available_models ?? STATIC_FALLBACK,
+    availableModels: STATIC_FALLBACK,
     globalDefaults: config?.global_defaults ?? {},
     workflowDefaults: config?.workflow_defaults ?? {},
     isLoading,

@@ -1,16 +1,26 @@
-mars-cmbagent
-fastapi>=0.104.1
-uvicorn[standard]>=0.24.0
-websockets>=12.0
-python-multipart>=0.0.6
-python-dotenv>=1.0.0
 pydantic>=2.7.4
 aiohttp>=3.9.0
-structlog
 sqlalchemy>=2.0
 alembic>=1.13
 psycopg2-binary>=2.9
-markdown
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-dotenv>=1.0
+structlog>=24.1
+httpx>=0.27
+aiofiles>=23.2
+python-multipart>=0.0.9
+weasyprint>=62.0
+fpdf2>=2.7
+markdown>=3.6
+beautifulsoup4>=4.12
+tldextract>=5.1
+mars-cmbagent==1.1.5
+langgraph>=0.2
+langchain-community>=0.3
+langchain-core>=0.3
+feedparser>=6.0
+arxiv>=2.1
 
 # Optional: data
 scipy

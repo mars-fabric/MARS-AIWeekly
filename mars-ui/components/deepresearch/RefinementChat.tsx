@@ -3,7 +3,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { Send, Check, Loader2 } from 'lucide-react'
 import { Button } from '@/components/core'
-import type { RefinementMessage } from '@/types/deepresearch'
+import type { RefinementMessage } from '@/types/modelOptions'
 
 interface RefinementChatProps {
   messages: RefinementMessage[]

@@ -12,6 +12,7 @@ import asyncio
 import json
 import mimetypes
 import os
+import re
 import sys
 import threading
 import uuid
@@ -340,6 +341,7 @@ async def _run_aiweekly_one_shot_stage(
                 date_from=date_from,
                 date_to=date_to,
                 sources=sources,
+                topics=topics,
                 custom_sources=custom_sources,
                 work_dir=work_dir,
             )
@@ -1501,72 +1503,163 @@ def _expand_generic_markdown_links(md_text: str) -> str:
     return re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", _repl, md_text)
 
 
-def _add_pdf_url_annotations(pdf_path: str) -> None:
-    """Add clickable URI annotations for any visible URL text in the PDF."""
-    import fitz
-
-    url_re = re.compile(r'https?://[^\s)\]>"\']+')
-    doc = fitz.open(pdf_path)
-    modified = False
-    try:
-        for page in doc:
-            page_text = page.get_text("text") or ""
-            urls = list(dict.fromkeys(url_re.findall(page_text)))
-            for url in urls:
-                for rect in page.search_for(url):
-                    page.insert_link({
-                        "kind": fitz.LINK_URI,
-                        "from": rect,
-                        "uri": url,
-                    })
-                    modified = True
-
-        if modified:
-            doc.save(pdf_path, incremental=False, encryption=fitz.PDF_ENCRYPT_KEEP)
-    finally:
-        doc.close()
-
-
 def _md_to_pdf(md_path: str, pdf_path: str) -> None:
-    """Convert a markdown file to PDF using markdown + PyMuPDF."""
-    import markdown
-    import fitz
+    """Convert markdown to PDF using WeasyPrint (markdown → HTML+CSS → PDF).
 
-    with open(md_path, "r", encoding="utf-8") as f:
-        md_text = f.read()
+    WeasyPrint handles tables, Unicode, long URLs, code blocks, and word-wrap
+    correctly with CSS. Much more robust than fpdf2 primitive rendering.
+    """
+    import markdown as _markdown
+    from weasyprint import HTML
 
-    md_text = _expand_generic_markdown_links(md_text)
+    with open(md_path, "r", encoding="utf-8") as fh:
+        raw = fh.read()
 
-    html_body = markdown.markdown(
-        md_text,
-        extensions=["extra", "tables", "fenced_code", "toc", "sane_lists", "nl2br"],
+    raw = _expand_generic_markdown_links(raw)
+
+    title_match = re.search(r"^#\s+(.+)$", raw, re.MULTILINE)
+    doc_title = title_match.group(1).strip() if title_match else os.path.basename(md_path)
+
+    html_body = _markdown.markdown(
+        raw,
+        extensions=["tables", "fenced_code", "sane_lists"],
     )
 
-    html = f"""<!DOCTYPE html>
-<html><head><style>
-body {{ font-family: Helvetica, Arial, sans-serif; font-size: 11pt; line-height: 1.5; color: #1a1a1a; word-wrap: break-word; overflow-wrap: break-word; }}
-h1 {{ font-size: 20pt; margin-top: 18pt; margin-bottom: 8pt; }}
-h2 {{ font-size: 16pt; margin-top: 14pt; margin-bottom: 6pt; }}
-h3 {{ font-size: 13pt; margin-top: 10pt; margin-bottom: 4pt; }}
-table {{ border-collapse: collapse; width: 100%; margin: 10pt 0; table-layout: fixed; }}
-th, td {{ border: 1px solid #ccc; padding: 6px 8px; text-align: left; font-size: 9pt; word-wrap: break-word; overflow-wrap: break-word; }}
-th {{ background-color: #f2f2f2; font-weight: bold; }}
-a {{ color: #1a73e8; text-decoration: underline; word-break: break-all; }}
-ul, ol {{ padding-left: 18pt; }}
-pre, code {{ font-size: 9pt; word-wrap: break-word; overflow-wrap: break-word; white-space: pre-wrap; }}
-</style></head><body>{html_body}</body></html>"""
+    css = """
+@page {
+    size: A4;
+    margin: 2cm 2.2cm 2.2cm 2.2cm;
+    @top-center {
+        content: string(doc-title);
+        font-family: Arial, sans-serif;
+        font-size: 8pt;
+        color: #999;
+        border-bottom: 1px solid #ddd;
+        padding-bottom: 4pt;
+    }
+    @bottom-center {
+        content: counter(page);
+        font-family: Arial, sans-serif;
+        font-size: 9pt;
+        color: #aaa;
+    }
+}
+body {
+    font-family: Arial, "DejaVu Sans", sans-serif;
+    font-size: 10pt;
+    line-height: 1.55;
+    color: #1a1a1a;
+}
+h1 {
+    string-set: doc-title content();
+    font-size: 20pt;
+    margin: 20pt 0 8pt 0;
+    color: #111;
+    border-bottom: 2px solid #ccc;
+    padding-bottom: 5pt;
+    page-break-after: avoid;
+}
+h2 {
+    font-size: 15pt;
+    margin: 16pt 0 5pt 0;
+    color: #222;
+    border-bottom: 1px solid #e0e0e0;
+    padding-bottom: 3pt;
+    page-break-after: avoid;
+}
+h3 {
+    font-size: 12pt;
+    margin: 12pt 0 4pt 0;
+    color: #333;
+    page-break-after: avoid;
+}
+h4, h5, h6 {
+    font-size: 10.5pt;
+    margin: 9pt 0 3pt 0;
+    page-break-after: avoid;
+}
+p { margin: 5pt 0; }
+ul, ol { margin: 5pt 0; padding-left: 18pt; }
+li { margin: 2pt 0; }
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 10pt 0;
+    font-size: 9pt;
+    page-break-inside: avoid;
+}
+thead { display: table-header-group; }
+th {
+    background: #f0f0f0;
+    font-weight: bold;
+    border: 1px solid #bbb;
+    padding: 5pt 7pt;
+    text-align: left;
+    word-break: break-word;
+}
+td {
+    border: 1px solid #ccc;
+    padding: 4pt 7pt;
+    word-break: break-word;
+    vertical-align: top;
+}
+tr:nth-child(even) td { background: #fafafa; }
+code {
+    background: #f3f3f3;
+    padding: 1pt 3pt;
+    font-family: "Courier New", Courier, monospace;
+    font-size: 8.5pt;
+    border-radius: 2pt;
+}
+pre {
+    background: #f5f5f5;
+    border: 1px solid #e0e0e0;
+    padding: 8pt 10pt;
+    margin: 8pt 0;
+    overflow-wrap: break-word;
+    word-break: break-all;
+    white-space: pre-wrap;
+    font-size: 8pt;
+    line-height: 1.4;
+    page-break-inside: avoid;
+}
+pre code {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+    font-size: inherit;
+}
+blockquote {
+    margin: 6pt 0 6pt 16pt;
+    padding: 4pt 10pt;
+    border-left: 3px solid #ccc;
+    color: #555;
+    font-style: italic;
+}
+a {
+    color: #0055cc;
+    word-break: break-all;
+}
+hr {
+    border: none;
+    border-top: 1px solid #ddd;
+    margin: 12pt 0;
+}
+"""
 
-    mediabox = fitz.paper_rect("a4")
-    content_rect = mediabox + (36, 36, -36, -36)  # 0.5-inch margins
+    html_doc = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{doc_title}</title>
+<style>{css}</style>
+</head>
+<body>
+{html_body}
+</body>
+</html>"""
 
-    def rectfn(rect_num, filled):
-        return mediabox, content_rect, None
-
-    story = fitz.Story(html=html)
-    writer = fitz.DocumentWriter(pdf_path)
-    story.write(writer, rectfn)
-    writer.close()
-    _add_pdf_url_annotations(pdf_path)
+    HTML(string=html_doc).write_pdf(pdf_path)
 
 
 @router.get("/{task_id}/download-pdf/{filename}")
@@ -1586,10 +1679,22 @@ async def download_aiweekly_artifact_pdf(task_id: str, filename: str, inline: bo
     if not os.path.isfile(md_path):
         raise HTTPException(404, "File not found")
 
+    # When report_final.md is requested but report_draft.md has significantly
+    # more content (Stage 4 hit output token limit), use the draft as source so
+    # the PDF contains all the data.
+    source_md = md_path
+    if filename == "report_final.md":
+        draft_path = os.path.join(work_dir, "input_files", "report_draft.md")
+        if os.path.isfile(draft_path):
+            final_size = os.path.getsize(md_path)
+            draft_size = os.path.getsize(draft_path)
+            if draft_size > final_size * 1.5:
+                source_md = draft_path
+
     pdf_filename = filename.rsplit(".", 1)[0] + ".pdf"
     pdf_path = os.path.join(work_dir, "input_files", pdf_filename)
 
-    _md_to_pdf(md_path, pdf_path)
+    _md_to_pdf(source_md, pdf_path)
 
     disposition = f'inline; filename="{pdf_filename}"' if inline else f'attachment; filename="{pdf_filename}"'
     return FileResponse(

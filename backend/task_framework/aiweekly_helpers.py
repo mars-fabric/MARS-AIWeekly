@@ -629,143 +629,45 @@ def save_stage_file(content: str, work_dir: str, filename: str) -> str:
 # Stage 1 — Data Collection (no AI)
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Priority companies: always get extra web-search coverage
-_PRIORITY_COMPANIES = [
-    "openai", "google", "deepmind", "microsoft", "anthropic",
-    "meta", "amazon", "huggingface",
-    "nvidia", "intel", "amd", "apple",
-    "bostondynamics",
-    "google_quantum", "ibm", "quantinuum",
-    "oracle",
-    "samsung", "salesforce",
-]
-
-
 def run_data_collection(
     date_from: str,
     date_to: str,
     sources: list,
     work_dir: str,
+    topics: list | None = None,
     custom_sources: list | None = None,
 ) -> dict:
-    """Run all data collection tools (non-LLM). Returns output_data dict."""
-    from cmbagent.external_tools.news_tools import (
-        announcements_noauth,
-        curated_ai_sources_search,
-        newsapi_search,
-        gnews_search,
-        multi_engine_web_search,
-        scrape_official_news_pages,
+    """Run Stage 1 data collection via LangGraph pipeline (non-LLM).
+
+    Two-tier architecture in news_collection_graph.py:
+    - Tier 1 (structured): cmbagent news tools — broad sweep, curated sources,
+      15 core AI company pages, optional NewsAPI/GNews
+    - Tier 2 (global topic search): RSS feeds, arXiv, DuckDuckGo, web_surfer agent,
+      perplexity agent — all driven by the user's actual topic strings, no
+      hard-coded company/keyword constraints
+    - Post-processing: topic-based gap fill, strict date filter, semantic dedup
+    """
+    from backend.task_framework.news_collection_graph import run_news_collection_graph
+
+    print(f"[Data Collection] Starting LangGraph pipeline for {date_from} to {date_to}")
+    print(f"[Data Collection] Topics: {topics or ['ai']}, Sources: {sources}")
+
+    final_state = run_news_collection_graph(
+        date_from=date_from,
+        date_to=date_to,
+        topics=topics or ["ai"],
+        sources=sources,
+        custom_sources=custom_sources,
     )
 
-    all_items: List[Dict] = []
-    seen_keys: set = set()
-    errors: List[str] = []
+    all_items = final_state["collected_items"]
+    errors = final_state["errors"]
+    coverage = final_state.get("topic_coverage", {})
 
-    def _merge(items: List[Dict], source_cap: int = 0):
-        added = 0
-        for item in items:
-            key = (
-                (item.get("url") or "").strip().lower(),
-                (item.get("title") or "").strip().lower()[:80],
-            )
-            if key not in seen_keys and key[0]:
-                seen_keys.add(key)
-                all_items.append(item)
-                added += 1
-                if source_cap and added >= source_cap:
-                    break
-
-    def _safe(fn, label, source_cap: int = 0, **kwargs):
-        try:
-            result = fn(**kwargs)
-            items = result.get("items") or result.get("articles") or []
-            print(f"[Data Collection] {label}: {len(items)} items")
-            _merge(items, source_cap=source_cap)
-        except Exception as e:
-            errors.append(f"{label}: {e}")
-            print(f"[Data Collection] {label}: ERROR {e}")
-
-    print(f"[Data Collection] Starting collection for {date_from} to {date_to}")
-
-    # Broad official sweep
-    _safe(announcements_noauth, "Broad official sweep",
-          query="", company="", from_date=date_from, to_date=date_to, limit=300)
-
-    # Per-company official page scraping
-    print("[Data Collection] Scraping official company news pages...")
-    for company in _PRIORITY_COMPANIES:
-        _safe(scrape_official_news_pages, f"Official/{company}",
-              company=company, from_date=date_from, to_date=date_to, limit=15)
-
-    # Curated AI sources
-    _safe(curated_ai_sources_search, "Curated AI sources",
-          query=f"AI news {date_from} to {date_to}", limit=40,
-          from_date=date_from, to_date=date_to)
-
-    # NewsAPI
-    if "press-releases" in sources or "company-announcements" in sources:
-        _safe(newsapi_search, "NewsAPI",
-              query="artificial intelligence OR machine learning",
-              from_date=date_from, to_date=date_to, page_size=100)
-
-    # GNews
-    _safe(gnews_search, "GNews",
-          query="artificial intelligence OR machine learning",
-          from_date=date_from, to_date=date_to, max_results=100)
-
-    # Targeted web search for companies with few results
-    companies_found: Dict[str, int] = {}
-    for item in all_items:
-        src = (item.get("source") or "").lower().strip()
-        companies_found[src] = companies_found.get(src, 0) + 1
-
-    for company in _PRIORITY_COMPANIES:
-        if companies_found.get(company, 0) < 2:
-            for query_variant in [
-                f"{company} AI product launch announcement",
-                f"{company} artificial intelligence release update",
-            ]:
-                _safe(multi_engine_web_search, f"Web/{company}",
-                      query=query_variant,
-                      max_results=5, from_date=date_from, to_date=date_to)
-
-    # User-provided custom data sources (URLs, RSS feeds, web pages)
-    if custom_sources:
-        print(f"[Data Collection] Scraping {len(custom_sources)} custom data sources...")
-        from cmbagent.external_tools.news_tools import (
-            _direct_scrape_page_links,
-            _fetch_rss_items,
-        )
-        from urllib.parse import urlparse
-
-        for url in custom_sources:
-            url = url.strip()
-            if not url or not url.startswith("http"):
-                continue
-            domain = urlparse(url).netloc or "custom"
-            label = domain.replace("www.", "")[:30]
-
-            # Try RSS first (works for feed URLs)
-            try:
-                rss_items = _fetch_rss_items(url, label, date_from, date_to)
-                if rss_items:
-                    print(f"[Data Collection] Custom/{label} (RSS): {len(rss_items)} items")
-                    _merge(rss_items)
-                    continue
-            except Exception:
-                pass
-
-            # Fall back to HTML page scraping
-            try:
-                page_items = _direct_scrape_page_links(url, label)
-                print(f"[Data Collection] Custom/{label} (HTML): {len(page_items)} items")
-                _merge(page_items)
-            except Exception as e:
-                errors.append(f"Custom/{label}: {e}")
-                print(f"[Data Collection] Custom/{label}: ERROR {e}")
-
-    print(f"[Data Collection] Total: {len(all_items)} unique items ({len(errors)} errors)")
+    print(f"[Data Collection] Complete: {len(all_items)} unique items ({len(errors)} errors)")
+    if coverage:
+        top = sorted(coverage.items(), key=lambda x: x[1], reverse=True)[:10]
+        print(f"[Data Collection] Top topic coverage: {top}")
 
     # Save raw collection
     collection_data = {
@@ -774,6 +676,7 @@ def run_data_collection(
         "total_items": len(all_items),
         "items": all_items,
         "errors": errors,
+        "topic_coverage": coverage,
     }
 
     out_dir = os.path.join(work_dir, "input_files")
@@ -784,7 +687,7 @@ def run_data_collection(
 
     # Markdown summary
     summary_lines = [
-        f"# Data Collection Summary",
+        "# Data Collection Summary",
         f"**Date Range:** {date_from} to {date_to}",
         f"**Total Items:** {len(all_items)}",
         f"**Errors:** {len(errors)}",
@@ -794,11 +697,11 @@ def run_data_collection(
         title = item.get("title", "Untitled")
         url = item.get("url", "")
         source = item.get("source", "unknown")
-        pub = (item.get("published_at") or "")[:10]
+        pub = (item.get("published_at") or item.get("date") or "")[:10]
         desc = (item.get("summary") or "").strip()
         summary_lines.append(f"- **{title}** | {source} | {pub}")
         if desc:
-            summary_lines.append(f"  {desc}")
+            summary_lines.append(f"  {desc[:200]}")
         summary_lines.append(f"  [{url}]({url})")
         summary_lines.append("")
 
