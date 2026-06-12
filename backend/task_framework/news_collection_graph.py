@@ -51,38 +51,43 @@ _CORE_AI_COMPANIES: List[str] = [
     "ibm", "mistral", "xai", "deepseek", "cohere",
 ]
 
-# Global AI news RSS feeds — broad, high-quality, topic-agnostic.
-# These are parsed by feedparser and filtered by date only (no topic filtering),
-# so they feed items for any user-provided topic.
+# Global AI news RSS feeds — official company and research sources only.
+# Third-party news aggregators (TechCrunch, VentureBeat, The Verge, etc.) are
+# intentionally excluded so all items link back to primary/official sources.
 _GLOBAL_RSS_FEEDS: List[str] = [
-    # AI-focused tech news
-    "https://techcrunch.com/category/artificial-intelligence/feed/",
-    "https://venturebeat.com/category/ai/feed/",
-    "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
-    "https://aibusiness.com/rss.xml",
-    "https://syncedreview.com/feed/",
-    "https://www.artificialintelligence-news.com/feed/",
-    "https://bdtechtalks.com/feed/",
-    "https://feeds.feedburner.com/oreilly/radar/atom",
-    # arXiv research categories
+    # arXiv research categories (official academic preprint server)
     "https://arxiv.org/rss/cs.AI",
     "https://arxiv.org/rss/cs.LG",
     "https://arxiv.org/rss/cs.CL",
     "https://arxiv.org/rss/cs.RO",
     "https://arxiv.org/rss/cs.CV",
-    # Company/community official blogs
-    "https://huggingface.co/blog/feed.xml",
+    # Official company AI/research blogs
     "https://openai.com/blog/rss.xml",
-    "https://blog.research.google/feeds/posts/default",
     "https://www.anthropic.com/rss.xml",
-    "https://blogs.nvidia.com/feed/",
+    "https://huggingface.co/blog/feed.xml",
+    "https://blog.research.google/feeds/posts/default",
+    "https://blog.google/technology/ai/rss/",
+    "https://deepmind.google/blog/rss.xml",
     "https://ai.meta.com/blog/rss/",
     "https://blogs.microsoft.com/ai/feed/",
-    "https://deepmind.google/blog/rss.xml",
+    "https://blogs.nvidia.com/feed/",
     "https://machinelearning.apple.com/rss.xml",
-    "https://mistral.ai/news/rss.xml",
     "https://aws.amazon.com/blogs/machine-learning/feed/",
+    "https://mistral.ai/news/rss.xml",
     "https://research.ibm.com/blog/rss",
+    "https://www.databricks.com/feed",
+    "https://cohere.com/blog/rss",
+    "https://stability.ai/blog/rss.xml",
+    # Official company newsroom / press release feeds
+    "https://www.apple.com/newsroom/rss-feed.rss",
+    "https://press.aboutamazon.com/rss/rss-news-releases.rss",
+    "https://news.microsoft.com/feed/",
+    "https://about.meta.com/news/rss/",
+    "https://nvidianews.nvidia.com/rss/all.rss",
+    "https://newsroom.doordash.com/rss.xml",
+    "https://newsroom.uber.com/rss/",
+    "https://waymo.com/blog/rss.xml",
+    "https://newsroom.spotify.com/rss.xml",
 ]
 
 # Topic coverage thresholds
