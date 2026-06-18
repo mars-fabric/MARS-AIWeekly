@@ -21,6 +21,7 @@ langchain-community>=0.3
 langchain-core>=0.3
 feedparser>=6.0
 arxiv>=2.1
+ddgs>=9.0
 
 # Optional: data
 scipy

@@ -29,6 +29,7 @@ dependencies = [
     "alembic>=1.13",
     "psycopg2-binary>=2.9",
     "markdown",
+    "ddgs>=9.0",
 ]
 
 [project.optional-dependencies]

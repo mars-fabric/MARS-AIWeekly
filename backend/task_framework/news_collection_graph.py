@@ -455,9 +455,9 @@ def company_ddg_news_node(state: NewsCollectionState) -> NewsCollectionState:
     errors = list(state["errors"])
 
     try:
-        from duckduckgo_search import DDGS
+        from ddgs import DDGS
     except ImportError:
-        errors.append("company_ddg_news: duckduckgo_search not installed")
+        errors.append("company_ddg_news: ddgs not installed")
         return {**state, "errors": errors}
 
     for slug, query in _COMPANY_DDG_QUERIES.items():
@@ -702,9 +702,9 @@ def topic_arxiv_search_node(state: NewsCollectionState) -> NewsCollectionState:
 def topic_web_search_node(state: NewsCollectionState) -> NewsCollectionState:
     """DuckDuckGo news search — structured global news results per user topic.
 
-    Uses duckduckgo_search.DDGS.news() for structured per-article output
+    Uses ddgs.DDGS.news() for structured per-article output
     (title, url, body, date, source). Falls back to DuckDuckGoSearchRun
-    text parsing if the duckduckgo_search package is unavailable.
+    text parsing if the ddgs package is unavailable.
     Queries are built from the user's actual topic strings.
     """
     collected = list(state["collected_items"])
@@ -720,7 +720,7 @@ def topic_web_search_node(state: NewsCollectionState) -> NewsCollectionState:
     queries.append(f"artificial intelligence major announcement {state['date_from']}")
 
     try:
-        from duckduckgo_search import DDGS
+        from ddgs import DDGS
         _use_structured = True
     except ImportError:
         _use_structured = False
@@ -759,47 +759,48 @@ def topic_web_search_node(state: NewsCollectionState) -> NewsCollectionState:
 
 
 def web_surfer_agent_node(state: NewsCollectionState) -> NewsCollectionState:
-    """cmbagent web_surfer: autonomous global web browsing per topic.
+    """Broad web search using DuckDuckGo — no API key required.
 
-    Only runs when BING_API_KEY (or equivalent web-browsing key) is set in .env.
-    Without a configured browsing tool the AutoGen loop never terminates.
+    Uses DDGS.text() for broader coverage (blogs, announcements, product pages)
+    complementing topic_web_search_node's news-focused DDGS.news() queries.
     """
-    if not os.environ.get("BING_API_KEY"):
-        print("[Collection] web_surfer_agent: skipped (no BING_API_KEY in .env)")
-        return state
-
-    try:
-        from cmbagent import one_shot
-    except ImportError:
-        return state
-
     collected = list(state["collected_items"])
     seen = list(state["seen_keys"])
     errors = list(state["errors"])
 
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        errors.append("web_surfer_ddgs: ddgs not installed")
+        return {**state, "collected_items": collected, "seen_keys": seen, "errors": errors}
+
     for topic in state["topics"]:
-        task = (
-            f"Search the web for the most important AI news, announcements, product releases, "
-            f"and research results about '{topic}' published between "
-            f"{state['date_from']} and {state['date_to']}.\n\n"
-            f"For each item found, provide:\n"
-            f"- Title\n"
-            f"- Full URL\n"
-            f"- Publication date\n"
-            f"- One to two sentence summary\n\n"
-            f"Search across company blogs, tech news sites, research institutions, and "
-            f"academic publishers. Return at least 10 items."
-        )
-        try:
-            result = one_shot(agent="web_surfer", task=task)
-            if result:
-                items = _parse_agent_result_to_items(result, source="web_surfer")
+        q = _topic_to_search_query(topic)
+        queries = [
+            f"{q} announcement release blog {state['date_from'][:7]}",
+            f"{q} AI research product launch {state['date_to'][:7]}",
+        ]
+        for query in queries:
+            try:
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(query, max_results=10))
+                items = [
+                    {
+                        "title": (r.get("title") or "")[:200],
+                        "url": r.get("href") or r.get("url") or "",
+                        "summary": (r.get("body") or "")[:500],
+                        "source": "web_surfer_ddgs",
+                        "published_at": "",
+                    }
+                    for r in results
+                    if r.get("href") or r.get("url")
+                ]
                 before = len(collected)
                 collected, seen = _merge_items(items, collected, seen)
-                print(f"[Collection] web_surfer/{topic}: {len(collected) - before} new items")
-        except Exception as exc:
-            errors.append(f"web_surfer/{topic}: {exc}")
-        time.sleep(2.0)
+                print(f"[Collection] web_surfer_ddgs/{query[:50]}: {len(collected) - before} new items")
+                time.sleep(1.5)
+            except Exception as exc:
+                errors.append(f"web_surfer_ddgs/{topic}: {exc}")
 
     return {**state, "collected_items": collected, "seen_keys": seen, "errors": errors}
 
