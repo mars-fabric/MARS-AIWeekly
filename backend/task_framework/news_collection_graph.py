@@ -38,6 +38,11 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 
+try:
+    import cmbagent.external_tools.news_tools as _news_tools
+except ImportError:
+    _news_tools = None
+
 logger = logging.getLogger(__name__)
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -48,46 +53,87 @@ logger = logging.getLogger(__name__)
 _CORE_AI_COMPANIES: List[str] = [
     "openai", "anthropic", "google", "meta", "microsoft",
     "nvidia", "huggingface", "amazon", "deepmind", "apple",
-    "ibm", "mistral", "xai", "deepseek", "cohere",
+    "ibm", "mistral", "xai", "deepseek", "cohere", "perplexity",
 ]
 
 # Global AI news RSS feeds — official company and research sources only.
 # Third-party news aggregators (TechCrunch, VentureBeat, The Verge, etc.) are
 # intentionally excluded so all items link back to primary/official sources.
 _GLOBAL_RSS_FEEDS: List[str] = [
-    # arXiv research categories (official academic preprint server)
-    "https://arxiv.org/rss/cs.AI",
-    "https://arxiv.org/rss/cs.LG",
-    "https://arxiv.org/rss/cs.CL",
-    "https://arxiv.org/rss/cs.RO",
-    "https://arxiv.org/rss/cs.CV",
-    # Official company AI/research blogs
-    "https://openai.com/blog/rss.xml",
-    "https://www.anthropic.com/rss.xml",
-    "https://huggingface.co/blog/feed.xml",
-    "https://blog.research.google/feeds/posts/default",
-    "https://blog.google/technology/ai/rss/",
-    "https://deepmind.google/blog/rss.xml",
-    "https://ai.meta.com/blog/rss/",
-    "https://blogs.microsoft.com/ai/feed/",
-    "https://blogs.nvidia.com/feed/",
-    "https://machinelearning.apple.com/rss.xml",
-    "https://aws.amazon.com/blogs/machine-learning/feed/",
-    "https://mistral.ai/news/rss.xml",
-    "https://research.ibm.com/blog/rss",
-    "https://www.databricks.com/feed",
-    "https://cohere.com/blog/rss",
-    "https://stability.ai/blog/rss.xml",
-    # Official company newsroom / press release feeds
-    "https://www.apple.com/newsroom/rss-feed.rss",
-    "https://press.aboutamazon.com/rss/rss-news-releases.rss",
-    "https://news.microsoft.com/feed/",
-    "https://about.meta.com/news/rss/",
-    "https://nvidianews.nvidia.com/rss/all.rss",
-    "https://newsroom.doordash.com/rss.xml",
-    "https://newsroom.uber.com/rss/",
-    "https://waymo.com/blog/rss.xml",
-    "https://newsroom.spotify.com/rss.xml",
+    # arXiv research categories
+"https://arxiv.org/rss/cs.AI",
+"https://arxiv.org/rss/cs.LG",
+"https://arxiv.org/rss/cs.CL",
+"https://arxiv.org/rss/cs.RO",
+"https://arxiv.org/rss/cs.CV",
+
+# AI research, news, and engineering sources
+"https://openai.com/news/",
+"https://openai.com/research/",
+"https://www.anthropic.com/news",
+"https://www.anthropic.com/research",
+
+"https://blog.google/",
+"https://blog.google/technology/ai/",
+"https://blog.google/innovation-and-ai/",
+"https://blog.google/innovation-and-ai/technology/ai/",
+"https://blog.google/innovation-and-ai/technology/research/",
+"https://research.google/blog/",
+"https://deepmind.google/blog/",
+
+"https://blogs.microsoft.com/",
+"https://blogs.microsoft.com/ai/",
+"https://microsoft.ai/",
+"https://microsoft.ai/blog/",
+"https://www.microsoft.com/en-us/research/blog/",
+"https://azure.microsoft.com/en-us/blog/",
+"https://azure.microsoft.com/en-us/blog/content-type/announcements/",
+
+"https://ai.meta.com/blog/",
+"https://ai.meta.com/research/",
+
+"https://aws.amazon.com/blogs/",
+"https://aws.amazon.com/blogs/machine-learning/",
+
+"https://blogs.nvidia.com/recent-news/",
+"https://developer.nvidia.com/blog/",
+
+"https://huggingface.co/blog",
+
+"https://mistral.ai/news/",
+
+"https://cohere.com/blog",
+
+"https://www.perplexity.ai/hub/blog",
+
+"https://x.ai/blog"
+]
+
+# Add companies not in cmbagent's _OFFICIAL_NEWS_PAGES, and fix Anthropic's
+# broken RSS entry. All existing company URLs are already in _GLOBAL_RSS_FEEDS
+# and are handled by rss_feeds_node — no need to duplicate them here.
+if _news_tools is not None:
+    _news_tools._OFFICIAL_NEWS_PAGES.update({
+        "mistral":    ["https://mistral.ai/news/", "https://mistral.ai/research/"],
+        "cohere":     ["https://cohere.com/blog"],
+        "perplexity": ["https://www.perplexity.ai/hub/blog"],
+        "xai":        ["https://x.ai/blog"],
+    })
+    _news_tools._COMPANY_RSS_FEEDS["anthropic"] = []
+
+# Major AI repos monitored for release notes via the GitHub public API.
+_GITHUB_AI_REPOS: List[str] = [
+    "openai/openai-python",
+    "anthropics/anthropic-sdk-python",
+    "huggingface/transformers",
+    "huggingface/diffusers",
+    "langchain-ai/langchain",
+    "microsoft/autogen",
+    "microsoft/semantic-kernel",
+    "mistralai/mistral-inference",
+    "vllm-project/vllm",
+    "ollama/ollama",
+    "google-deepmind/gemma",
 ]
 
 # Topic coverage thresholds
@@ -332,7 +378,12 @@ def _parse_ddg_snippet(raw: str, query: str) -> List[Dict[str, Any]]:
 # ─── Tier 1: cmbagent structured tools ───────────────────────────────────────
 
 def broad_sweep_node(state: NewsCollectionState) -> NewsCollectionState:
-    """Broad official AI announcements sweep via cmbagent (no limits)."""
+    """Broad official AI announcements sweep via cmbagent (no limits).
+
+    Only runs when "press-releases" is selected in the UI.
+    """
+    if "press-releases" not in (state.get("sources") or []):
+        return state
     try:
         from cmbagent.external_tools.news_tools import announcements_noauth
         result = announcements_noauth(
@@ -353,7 +404,11 @@ def curated_sources_node(state: NewsCollectionState) -> NewsCollectionState:
 
     Running per-topic (not one generic query) ensures curated sources
     return relevant articles for any topic the user specifies.
+
+    Only runs when "curated-ai-websites" is selected in the UI.
     """
+    if "curated-ai-websites" not in (state.get("sources") or []):
+        return state
     try:
         from cmbagent.external_tools.news_tools import curated_ai_sources_search
     except ImportError as exc:
@@ -393,7 +448,11 @@ def company_scrape_node(state: NewsCollectionState) -> NewsCollectionState:
 
     Uses a fixed list of 15 major AI companies — independent of user topics.
     These companies reliably publish AI news that is always relevant.
+
+    Only runs when "company-announcements" is selected in the UI.
     """
+    if "company-announcements" not in (state.get("sources") or []):
+        return state
     try:
         from cmbagent.external_tools.news_tools import scrape_official_news_pages
     except ImportError as exc:
@@ -440,6 +499,7 @@ _COMPANY_DDG_QUERIES: Dict[str, str] = {
     "xai":          "xAI Grok announcement",
     "deepseek":     "DeepSeek AI model release",
     "cohere":       "Cohere AI enterprise announcement",
+    "perplexity":   "Perplexity AI search announcement",
 }
 
 
@@ -449,7 +509,11 @@ def company_ddg_news_node(state: NewsCollectionState) -> NewsCollectionState:
     This supplements the cmbagent company_scrape (which depends on cmbagent tools)
     with a direct DDGS.news() search per company. Ensures company news appears even
     when cmbagent tools are unavailable or return sparse results.
+
+    Only runs when "company-announcements" is selected in the UI.
     """
+    if "company-announcements" not in (state.get("sources") or []):
+        return state
     collected = list(state["collected_items"])
     seen = list(state["seen_keys"])
     errors = list(state["errors"])
@@ -484,6 +548,77 @@ def company_ddg_news_node(state: NewsCollectionState) -> NewsCollectionState:
             time.sleep(1.0)
         except Exception as exc:
             errors.append(f"company_ddg/{slug}: {exc}")
+
+    return {**state, "collected_items": collected, "seen_keys": seen, "errors": errors}
+
+
+def github_releases_node(state: NewsCollectionState) -> NewsCollectionState:
+    """Fetch recent releases from major AI GitHub repos via the public REST API.
+
+    Only runs when "github" is included in state["sources"] (i.e. the user
+    selected "GitHub Releases" in the UI).
+
+    Uses GITHUB_TOKEN env var when available (5000 req/hr); falls back to
+    unauthenticated requests (60 req/hr — sufficient for ~10 repos per run).
+    """
+    if "github" not in (state.get("sources") or []):
+        return state
+
+    import json
+    from urllib.request import Request, urlopen
+    from urllib.error import URLError
+
+    collected = list(state["collected_items"])
+    seen = list(state["seen_keys"])
+    errors = list(state["errors"])
+
+    date_from = _parse_date(state.get("date_from", ""))
+    date_to   = _parse_date(state.get("date_to", ""))
+    token     = os.environ.get("GITHUB_TOKEN", "")
+
+    for repo in _GITHUB_AI_REPOS:
+        try:
+            api_url = f"https://api.github.com/repos/{repo}/releases?per_page=10"
+            headers = {
+                "User-Agent": "MARS-AIWeekly/1.0",
+                "Accept": "application/vnd.github+json",
+            }
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            req = Request(api_url, headers=headers)
+            with urlopen(req, timeout=8) as resp:
+                releases = json.loads(resp.read().decode())
+
+            if not isinstance(releases, list):
+                continue
+
+            items = []
+            for r in releases:
+                pub_str = (r.get("published_at") or r.get("created_at") or "")[:10]
+                pub_dt  = _parse_date(pub_str) if pub_str else None
+                if pub_dt and date_from and date_to:
+                    if not (date_from <= pub_dt <= date_to):
+                        continue
+                tag = r.get("name") or r.get("tag_name") or ""
+                if not tag:
+                    continue
+                repo_short = repo.split("/")[-1]
+                items.append({
+                    "title":        f"{repo_short} {tag}",
+                    "url":          r.get("html_url") or "",
+                    "summary":      (r.get("body") or "")[:500],
+                    "source":       "github_releases",
+                    "published_at": pub_str,
+                })
+
+            before = len(collected)
+            collected, seen = _merge_items(items, collected, seen)
+            added = len(collected) - before
+            if added:
+                print(f"[Collection] GitHub/{repo}: {added} releases")
+            time.sleep(0.5)
+        except Exception as exc:
+            errors.append(f"github_releases/{repo}: {exc}")
 
     return {**state, "collected_items": collected, "seen_keys": seen, "errors": errors}
 
@@ -545,7 +680,12 @@ def newsapi_gnews_node(state: NewsCollectionState) -> NewsCollectionState:
 # ─── Tier 1 + common feeds ────────────────────────────────────────────────────
 
 def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
-    """Parse global AI RSS feeds via feedparser (date-filtered, no topic constraint)."""
+    """Parse global AI RSS feeds via feedparser (date-filtered, no topic constraint).
+
+    Only runs when "curated-ai-websites" is selected in the UI.
+    """
+    if "curated-ai-websites" not in (state.get("sources") or []):
+        return state
     try:
         import feedparser
     except ImportError:
@@ -593,6 +733,18 @@ def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
                 before = len(collected)
                 collected, seen = _merge_items(items, collected, seen)
                 print(f"[Collection] RSS/{source_label}: {len(collected) - before} new items")
+            else:
+                # No usable RSS items — feedparser may have parsed HTML as a
+                # partial/bozo feed with entries that fail date/title checks.
+                # Always fall back to HTML scraping for non-RSS URLs.
+                try:
+                    html_items = _scrape_page_permissive(feed_url, source_label)
+                    if html_items:
+                        before = len(collected)
+                        collected, seen = _merge_items(html_items, collected, seen)
+                        print(f"[Collection] HTML/{source_label}: {len(collected) - before} new items")
+                except Exception:
+                    pass
         except Exception as exc:
             errors.append(f"rss/{feed_url}: {exc}")
         time.sleep(0.3)
@@ -600,8 +752,253 @@ def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
     return {**state, "collected_items": collected, "seen_keys": seen, "errors": errors}
 
 
+def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
+    """Scrape a blog/news page and return all article-like links.
+
+    Unlike cmbagent's _direct_scrape_page_links, this does NOT require a URL
+    path signal (e.g. /blog/, /news/) — it accepts any same-domain link that
+    has at least 2 path segments and a meaningful anchor text.
+
+    Date extraction strategy (tried in order):
+      1. Date anywhere in anchor text (handles Anthropic, Cohere, X.ai)
+      2. Nearest <time datetime="..."> tag within 2 000 chars (handles AWS, HuggingFace)
+      3. Inline "Mon DD, YYYY" in the 500 HTML chars before the anchor (handles Mistral, NVIDIA)
+      4. Date embedded in the URL path  /YYYY/MM/DD/
+
+    Domain matching: same domain OR same apex company domain family, so that
+    e.g. deepmind.google/blog links to blog.google and microsoft.ai links to
+    blogs.microsoft.com are both accepted.
+    """
+    import re as _re
+    import datetime as _dt
+    from html import unescape as _unescape
+    from urllib.parse import urlparse as _urlparse
+    from urllib.request import Request as _Req, urlopen as _open
+
+    _NAV_SKIP = [
+        r"^/$", r"/category/?$", r"/tag/", r"/page/\d", r"/author/",
+        r"/search", r"/login", r"/signup", r"/contact", r"/about/?$",
+        r"/privacy", r"/terms", r"/sitemap", r"\.(css|js|png|jpg|svg|ico)$",
+        r"/store/", r"/pricing", r"/download", r"/careers", r"/jobs",
+        r"/legal", r"/account", r"/settings", r"/profile", r"/dashboard",
+        r"/feed/?$", r"/rss/?$",
+    ]
+    _NAV_TITLES = {
+        "read more", "learn more", "see all", "view all", "click here",
+        "more", "next", "previous", "sign in", "sign up", "log in",
+        "get started", "try free", "contact us", "register now",
+        "view more", "explore", "subscribe",
+        # topic-filter / category navigation labels common on research/news pages
+        "alignment", "economics", "interpretability", "societal impacts",
+        "frontier red team", "product", "research", "policy", "news",
+        "announcements", "company",
+        # Google blog subcategory nav labels
+        "google deepmind", "google research", "google labs", "gemini models",
+        "quantum computing", "developer tools", "gemini app", "gemini notebook",
+        "global network", "google cloud", "safety & security", "google health",
+        "google workspace", "google play", "google nest", "chromebook",
+        "sustainability", "shopping", "google.org", "public policy",
+        "creating opportunity", "around the globe", "life at google",
+        # Microsoft topic labels
+        "innovation", "digital transformation", "security", "work & life",
+        "diversity & inclusion",
+        # Generic single-word/short category labels
+        "science", "technology", "robotics", "infrastructure",
+    }
+    _DATE_PAT = r"([A-Za-z]{3}\s+\d{1,2},?\s+20\d{2})"
+
+    def _apex(netloc: str) -> str:
+        """Return the company name that owns the domain.
+
+        For brand/vanity TLDs (.google, .amazon, .apple, .microsoft) the TLD
+        itself IS the company name, so we return it.  For everything else we
+        return the second-to-last label (openai for openai.com, microsoft for
+        blogs.microsoft.com, huggingface for huggingface.co, etc.).
+
+        This lets deepmind.google ↔ blog.google and
+        microsoft.ai ↔ blogs.microsoft.com be recognised as the same company.
+        """
+        _BRAND_TLDS = {"google", "amazon", "apple", "microsoft"}
+        parts = netloc.lower().replace("www.", "").rstrip(".").split(".")
+        if len(parts) == 1:
+            return parts[0]
+        if parts[-1] in _BRAND_TLDS:
+            return parts[-1]
+        return parts[-2] if len(parts) >= 2 else parts[0]
+
+    def _parse_inline_date(s: str) -> str:
+        m = _re.search(_DATE_PAT, s)
+        if m:
+            try:
+                return _dt.datetime.strptime(m.group(1).replace(",", ""), "%b %d %Y").strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+        return ""
+
+    try:
+        req = _Req(page_url, headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "identity",
+        })
+        with _open(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        return []
+
+    if len(html) < 500:
+        return []
+
+    parsed_base = _urlparse(page_url)
+    base_domain = parsed_base.netloc.lower().replace("www.", "")
+    base_apex   = _apex(parsed_base.netloc)
+
+    # Strategy 2: build position-indexed map of <time datetime="..."> dates
+    _time_positions: List[tuple] = []
+    for tm in _re.finditer(r'<time[^>]+datetime="([^"]*)"', html, _re.I):
+        raw_dt = tm.group(1).strip()
+        d = ""
+        iso_m = _re.match(r"(20\d{2}-\d{2}-\d{2})", raw_dt)
+        if iso_m:
+            d = iso_m.group(1)
+        else:
+            for fmt in ("%B %Y", "%b %Y"):
+                try:
+                    d = _dt.datetime.strptime(raw_dt[:16], fmt).strftime("%Y-%m-01")
+                    break
+                except ValueError:
+                    pass
+        if d:
+            _time_positions.append((tm.start(), d))
+
+    def _nearest_time_date(pos: int, radius: int = 2000) -> str:
+        best, best_dist = "", radius + 1
+        for tpos, td in _time_positions:
+            dist = abs(tpos - pos)
+            if dist < best_dist:
+                best_dist, best = dist, td
+        return best if best_dist <= radius else ""
+
+    link_re = _re.compile(r'<a\b([^>]*?)>(.*?)</a>', _re.I | _re.S)
+    items: List[Dict] = []
+    seen_urls: set = set()
+
+    for match in link_re.finditer(html):
+        attrs_str  = match.group(1)
+        title_html = match.group(2)
+
+        # Extract href from attributes string
+        href_m = _re.search(r'\bhref=["\']([^"\'#]+)["\']', attrs_str, _re.I)
+        if not href_m:
+            continue
+        href = href_m.group(1).strip()
+        if href.startswith("/"):
+            href = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
+        if not href.startswith("http"):
+            continue
+
+        # Domain check: same domain, containment, OR same company apex family
+        link_parsed = _urlparse(href)
+        link_domain = link_parsed.netloc.lower().replace("www.", "")
+        if (base_domain not in link_domain
+                and link_domain not in base_domain
+                and _apex(link_parsed.netloc) != base_apex):
+            continue
+
+        path = link_parsed.path.lower()
+        if any(_re.search(pat, path) for pat in _NAV_SKIP):
+            continue
+
+        path_parts = [p for p in path.split("/") if p]
+        if len(path_parts) < 2:
+            continue
+
+        # Strip query/fragment for dedup key
+        url_key = f"{link_parsed.scheme}://{link_parsed.netloc}{link_parsed.path}".lower().rstrip("/")
+        if url_key in seen_urls:
+            continue
+        seen_urls.add(url_key)
+
+        # Extract title: anchor inner text first, then attribute fallbacks
+        raw_text = _re.sub(r"<[^>]+>", "", _unescape(title_html)).strip()
+        raw_text = _re.sub(r"\s+", " ", raw_text).strip()
+        if not raw_text or len(raw_text) < 5:
+            # Fallback: aria-label or data-event-content-name (DeepMind-style overlays).
+            # Try both and keep the first that isn't itself a nav label (e.g. "Learn more").
+            for attr in ("aria-label", "data-event-content-name"):
+                am = _re.search(rf'\b{attr}="([^"]+)"', attrs_str, _re.I)
+                if am:
+                    candidate = _re.sub(
+                        r'\s*[-–]\s*(?:learn more|read more|view post)$',
+                        "", am.group(1), flags=_re.I
+                    ).strip()
+                    if len(candidate) > 5 and candidate.lower() not in _NAV_TITLES:
+                        raw_text = candidate
+                        break
+        if not raw_text or len(raw_text) < 5 or len(raw_text) > 400:
+            continue
+
+        # -- Date extraction --
+        pub_date = ""
+
+        # Strategy 1: date anywhere in anchor text
+        date_m = _re.search(_DATE_PAT, raw_text)
+        if date_m:
+            pub_date = _parse_inline_date(date_m.group(1))
+            before = raw_text[:date_m.start()].strip()
+            after  = raw_text[date_m.end():].strip()
+            # Use whichever side of the date has more real title content
+            raw_text = before if len(before) >= len(after) else after
+            # Strip a leading CamelCase category prefix (e.g. "AnnouncementsTitle")
+            raw_text = _re.sub(r"^([A-Z][a-z]{3,})(?=[A-Z])", "", raw_text).strip()
+            raw_text = _re.sub(r"^([A-Z][a-z]{3,})\s+(?=[A-Z])", "", raw_text).strip()
+
+        # Strategy 2: nearest <time datetime> tag
+        if not pub_date:
+            pub_date = _nearest_time_date(match.start())
+
+        # Strategy 3: inline date in the 500 HTML chars preceding this anchor
+        if not pub_date:
+            ctx = html[max(0, match.start() - 500): match.start()]
+            # Use the LAST (most recent / closest) date found before this anchor
+            ctx_dates = _re.findall(_DATE_PAT, ctx)
+            if ctx_dates:
+                pub_date = _parse_inline_date(ctx_dates[-1])
+
+        # Strategy 4: date in URL path  /YYYY/MM/DD/
+        if not pub_date:
+            url_date = _re.search(r"/(20\d{2})[/-](0[1-9]|1[0-2])[/-](\d{2})?", href)
+            if url_date:
+                y, mo = url_date.group(1), url_date.group(2)
+                d = url_date.group(3) or "15"
+                pub_date = f"{y}-{mo}-{d}"
+
+        title = raw_text
+        if not title or len(title) < 8 or len(title) > 300:
+            continue
+        if title.lower() in _NAV_TITLES:
+            continue
+
+        items.append({"title": title, "url": href, "source": label,
+                      "published_at": pub_date, "summary": ""})
+
+    return items
+
+
 def custom_sources_node(state: NewsCollectionState) -> NewsCollectionState:
-    """User-provided custom sources (RSS feed URLs or HTML pages)."""
+    """User-provided custom sources (RSS feed URLs or HTML pages).
+
+    Strategy per URL:
+    1. Try RSS/Atom via cmbagent's _fetch_rss_items (date-filtered).
+    2. Try cmbagent's _direct_scrape_page_links (requires article-path signals).
+    3. Fall back to _scrape_page_permissive which accepts any same-domain link
+       — needed for sites like blog.google/* whose article paths don't contain
+       /blog/ or /news/ but still produce real articles.
+    """
+    from urllib.parse import urlparse
+
     custom_sources = state.get("custom_sources") or []
     if not custom_sources:
         return state
@@ -610,32 +1007,49 @@ def custom_sources_node(state: NewsCollectionState) -> NewsCollectionState:
     seen = list(state["seen_keys"])
     errors = list(state["errors"])
 
-    try:
-        from cmbagent.external_tools.news_tools import _direct_scrape_page_links, _fetch_rss_items
-        from urllib.parse import urlparse
+    if _news_tools is not None:
+        _fetch_rss = getattr(_news_tools, "_fetch_rss_items", None)
+        _scrape    = getattr(_news_tools, "_direct_scrape_page_links", None)
+    else:
+        _fetch_rss = _scrape = None
 
-        for url in custom_sources:
-            url = (url or "").strip()
-            if not url.startswith("http"):
-                continue
-            label = (urlparse(url).netloc or "custom").replace("www.", "")[:30]
+    for url in custom_sources:
+        url = (url or "").strip()
+        if not url.startswith("http"):
+            continue
+        label = (urlparse(url).netloc or "custom").replace("www.", "")[:30]
+
+        # 1. RSS
+        if _fetch_rss is not None:
             try:
-                rss_items = _fetch_rss_items(url, label, state["date_from"], state["date_to"])
+                rss_items = _fetch_rss(url, label, state["date_from"], state["date_to"])
                 if rss_items:
+                    before = len(collected)
                     collected, seen = _merge_items(rss_items, collected, seen)
-                    print(f"[Collection] Custom/{label} (RSS): {len(rss_items)} items")
+                    print(f"[Collection] Custom/{label} (RSS): {len(collected) - before} items")
                     continue
             except Exception:
                 pass
+
+        # 2. cmbagent HTML scraper (signal-filtered)
+        scraped: List[Dict] = []
+        if _scrape is not None:
             try:
-                page_items = _direct_scrape_page_links(url, label)
-                collected, seen = _merge_items(page_items, collected, seen)
-                print(f"[Collection] Custom/{label} (HTML): {len(page_items)} items")
+                scraped = _scrape(url, label)
+            except Exception:
+                pass
+
+        # 3. Permissive fallback if step 2 found nothing
+        if not scraped:
+            try:
+                scraped = _scrape_page_permissive(url, label)
             except Exception as exc:
                 errors.append(f"custom/{label}: {exc}")
 
-    except Exception as exc:
-        errors.append(f"custom_sources: {exc}")
+        if scraped:
+            before = len(collected)
+            collected, seen = _merge_items(scraped, collected, seen)
+            print(f"[Collection] Custom/{label} (HTML): {len(collected) - before} items")
 
     return {**state, "collected_items": collected, "seen_keys": seen, "errors": errors}
 
@@ -996,6 +1410,7 @@ def build_news_graph():
     graph.add_node("broad_sweep",        broad_sweep_node)
     graph.add_node("curated_sources",    curated_sources_node)
     graph.add_node("company_scrape",     company_scrape_node)
+    graph.add_node("github_releases",    github_releases_node)
     graph.add_node("company_ddg_news",   company_ddg_news_node)
     graph.add_node("newsapi_gnews",      newsapi_gnews_node)
 
@@ -1018,7 +1433,8 @@ def build_news_graph():
     graph.set_entry_point("broad_sweep")
     graph.add_edge("broad_sweep",          "curated_sources")
     graph.add_edge("curated_sources",      "company_scrape")
-    graph.add_edge("company_scrape",       "company_ddg_news")
+    graph.add_edge("company_scrape",       "github_releases")
+    graph.add_edge("github_releases",      "company_ddg_news")
     graph.add_edge("company_ddg_news",     "newsapi_gnews")
     graph.add_edge("newsapi_gnews",        "rss_feeds")
     graph.add_edge("rss_feeds",            "custom_sources")
