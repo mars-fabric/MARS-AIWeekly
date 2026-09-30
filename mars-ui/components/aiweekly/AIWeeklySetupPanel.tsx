@@ -41,9 +41,7 @@ export default function AIWeeklySetupPanel({ hook, onNext }: AIWeeklySetupPanelP
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
     })
     const [topics, setTopics] = useState<string[]>(AVAILABLE_TOPICS.map(t => t.id))
-    const [sources, setSources] = useState<string[]>([
-        'github', 'press-releases', 'company-announcements', 'major-releases', 'curated-ai-websites',
-    ])
+    const [sources, setSources] = useState<string[]>([])
     const [style, setStyle] = useState<'concise' | 'detailed' | 'technical'>('concise')
     const [customSources, setCustomSources] = useState('')
     const [submitted, setSubmitted] = useState(false)

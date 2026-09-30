@@ -60,14 +60,7 @@ _CORE_AI_COMPANIES: List[str] = [
 # Third-party news aggregators (TechCrunch, VentureBeat, The Verge, etc.) are
 # intentionally excluded so all items link back to primary/official sources.
 _GLOBAL_RSS_FEEDS: List[str] = [
-    # arXiv research categories
-"https://arxiv.org/rss/cs.AI",
-"https://arxiv.org/rss/cs.LG",
-"https://arxiv.org/rss/cs.CL",
-"https://arxiv.org/rss/cs.RO",
-"https://arxiv.org/rss/cs.CV",
-
-# AI research, news, and engineering sources
+    # AI research, news, and engineering sources
 "https://openai.com/news/",
 "https://openai.com/research/",
 "https://www.anthropic.com/news",
@@ -1419,7 +1412,6 @@ def build_news_graph():
     graph.add_node("custom_sources",   custom_sources_node)
 
     # Tier 2 — global topic search
-    graph.add_node("topic_arxiv_search",   topic_arxiv_search_node)
     graph.add_node("topic_web_search",     topic_web_search_node)
     graph.add_node("web_surfer_agent",     web_surfer_agent_node)
     graph.add_node("perplexity_agent",     perplexity_agent_node)
@@ -1438,8 +1430,7 @@ def build_news_graph():
     graph.add_edge("company_ddg_news",     "newsapi_gnews")
     graph.add_edge("newsapi_gnews",        "rss_feeds")
     graph.add_edge("rss_feeds",            "custom_sources")
-    graph.add_edge("custom_sources",       "topic_arxiv_search")
-    graph.add_edge("topic_arxiv_search",   "topic_web_search")
+    graph.add_edge("custom_sources",       "topic_web_search")
     graph.add_edge("topic_web_search",     "web_surfer_agent")
     graph.add_edge("web_surfer_agent",     "perplexity_agent")
     graph.add_edge("perplexity_agent",     "gap_fill")
