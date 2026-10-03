@@ -701,8 +701,9 @@ def run_data_collection(
         desc = (item.get("summary") or "").strip()
         summary_lines.append(f"- **{title}** | {source} | {pub}")
         if desc:
-            summary_lines.append(f"  {desc[:200]}")
-        summary_lines.append(f"  [{url}]({url})")
+            summary_lines.append(f"  {desc[:800]}")
+        if url:
+            summary_lines.append(f"  [{url}]({url})")
         summary_lines.append("")
 
     summary = "\n".join(summary_lines)

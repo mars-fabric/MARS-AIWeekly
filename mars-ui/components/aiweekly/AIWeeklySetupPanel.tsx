@@ -51,7 +51,7 @@ export default function AIWeeklySetupPanel({ hook, onNext }: AIWeeklySetupPanelP
         setter(arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id])
     }
 
-    const canSubmit = topics.length > 0 && sources.length > 0 && dateFrom && dateTo && dateFrom <= dateTo && !isLoading && !submitted
+    const canSubmit = topics.length > 0 && dateFrom && dateTo && dateFrom <= dateTo && !isLoading && !submitted
 
     const handleSubmit = useCallback(async () => {
         if (!canSubmit) return

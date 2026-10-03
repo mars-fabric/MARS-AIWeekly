@@ -85,21 +85,19 @@ _GLOBAL_RSS_FEEDS: List[str] = [
 "https://ai.meta.com/blog/",
 "https://ai.meta.com/research/",
 
-"https://aws.amazon.com/blogs/",
+"https://aws.amazon.com/blogs/aws/",
 "https://aws.amazon.com/blogs/machine-learning/",
 
-"https://blogs.nvidia.com/recent-news/",
+"https://blogs.nvidia.com/blog/category/ai/",
+"https://blogs.nvidia.com/blog/tag/agentic-ai/",
+"https://blogs.nvidia.com/blog/tag/inference/",
 "https://developer.nvidia.com/blog/",
 
 "https://huggingface.co/blog",
 
-"https://mistral.ai/news/",
-
 "https://cohere.com/blog",
 
 "https://www.perplexity.ai/hub/blog",
-
-"https://x.ai/blog"
 ]
 
 # Add companies not in cmbagent's _OFFICIAL_NEWS_PAGES, and fix Anthropic's
@@ -107,10 +105,8 @@ _GLOBAL_RSS_FEEDS: List[str] = [
 # and are handled by rss_feeds_node — no need to duplicate them here.
 if _news_tools is not None:
     _news_tools._OFFICIAL_NEWS_PAGES.update({
-        "mistral":    ["https://mistral.ai/news/", "https://mistral.ai/research/"],
         "cohere":     ["https://cohere.com/blog"],
         "perplexity": ["https://www.perplexity.ai/hub/blog"],
-        "xai":        ["https://x.ai/blog"],
     })
     _news_tools._COMPANY_RSS_FEEDS["anthropic"] = []
 
@@ -153,6 +149,15 @@ class NewsCollectionState(TypedDict):
 
 # ─── Utility helpers ──────────────────────────────────────────────────────────
 
+def _strip_html(text: str) -> str:
+    """Strip HTML tags and decode HTML entities from RSS summary text."""
+    import html as _html
+    text = _html.unescape(text)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
 def _parse_date(date_str: str) -> Optional[datetime]:
     """Parse a date string in ISO, RFC 2822, and common formats."""
     if not date_str:
@@ -189,13 +194,19 @@ def _merge_items(
     collected: List[Dict],
     seen_keys: List[str],
 ) -> tuple[List[Dict], List[str]]:
-    """Merge new_items into collected, skipping URL-level exact duplicates."""
+    """Merge new_items into collected, skipping exact duplicates.
+
+    Dedup key is url|title. Items without a URL use title alone as the key
+    so they are not silently dropped.
+    """
     seen = set(seen_keys)
     for item in new_items:
         url = (item.get("url") or "").strip().lower()
         title = (item.get("title") or "").strip().lower()[:80]
-        key = f"{url}|{title}"
-        if url and key not in seen:
+        if not title:
+            continue  # no title and no URL — nothing to identify the item
+        key = f"{url}|{title}" if url else title
+        if key not in seen:
             seen.add(key)
             collected.append(item)
     return collected, list(seen)
@@ -675,10 +686,8 @@ def newsapi_gnews_node(state: NewsCollectionState) -> NewsCollectionState:
 def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
     """Parse global AI RSS feeds via feedparser (date-filtered, no topic constraint).
 
-    Only runs when "curated-ai-websites" is selected in the UI.
+    Always runs — hardcoded feeds are independent of source checkbox selection.
     """
-    if "curated-ai-websites" not in (state.get("sources") or []):
-        return state
     try:
         import feedparser
     except ImportError:
@@ -689,10 +698,36 @@ def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
     errors = list(state["errors"])
     date_from = _parse_date(state["date_from"])
     date_to_dt = _parse_date(state["date_to"])
+    date_to_eod = date_to_dt.replace(hour=23, minute=59, second=59) if date_to_dt else None
+
+    # Known RSS feed URLs for blog pages that don't auto-discover well
+    _KNOWN_FEEDS = {
+        "https://huggingface.co/blog":                        "https://huggingface.co/blog/feed.xml",
+        "https://aws.amazon.com/blogs/aws/":                  "https://aws.amazon.com/blogs/aws/feed/",
+        "https://aws.amazon.com/blogs/machine-learning/":     "https://aws.amazon.com/blogs/machine-learning/feed/",
+        "https://blogs.nvidia.com/blog/category/ai/":         "https://blogs.nvidia.com/feed/",
+        "https://blogs.nvidia.com/blog/tag/agentic-ai/":      "https://blogs.nvidia.com/blog/tag/agentic-ai/feed/",
+        "https://blogs.nvidia.com/blog/tag/inference/":       "https://blogs.nvidia.com/blog/tag/inference/feed/",
+        "https://developer.nvidia.com/blog/":                 "https://developer.nvidia.com/blog/feed/",
+    }
+
+    def _try_feed(url: str):
+        """Resolve blog URL to its RSS feed. Checks known map first, then auto-discovers."""
+        resolved = _KNOWN_FEEDS.get(url.rstrip("/") + "/") or _KNOWN_FEEDS.get(url.rstrip("/")) or url
+        f = feedparser.parse(resolved)
+        if f.entries:
+            return f
+        # Auto-discovery fallback for unmapped URLs
+        for suffix in ("/feed/", "/feed.xml", "/rss/", "/atom/"):
+            candidate = url.rstrip("/") + suffix
+            f2 = feedparser.parse(candidate)
+            if f2.entries:
+                return f2
+        return f
 
     for feed_url in _GLOBAL_RSS_FEEDS:
         try:
-            feed = feedparser.parse(feed_url)
+            feed = _try_feed(feed_url)
             source_label = feed.feed.get("title") or feed_url.split("/")[2]
 
             items: List[Dict] = []
@@ -711,13 +746,13 @@ def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
                     pub_dt = _parse_date(raw)
                     pub_str = raw[:10] if raw else ""
 
-                if pub_dt and date_from and date_to_dt:
-                    if not (date_from <= pub_dt <= date_to_dt):
+                if pub_dt and date_from and date_to_eod:
+                    if not (date_from <= pub_dt <= date_to_eod):
                         continue
 
                 title = (entry.get("title") or "").strip()
                 url = (entry.get("link") or "").strip()
-                summary = (entry.get("summary") or "").strip()[:500]
+                summary = _strip_html(entry.get("summary") or "")[:500]
                 if title and url:
                     items.append({"title": title, "url": url, "summary": summary,
                                    "source": source_label, "published_at": pub_str})
@@ -769,7 +804,7 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
     from urllib.request import Request as _Req, urlopen as _open
 
     _NAV_SKIP = [
-        r"^/$", r"/category/?$", r"/tag/", r"/page/\d", r"/author/",
+        r"^/$", r"/category/", r"/tag/", r"/page/\d", r"/author/",
         r"/search", r"/login", r"/signup", r"/contact", r"/about/?$",
         r"/privacy", r"/terms", r"/sitemap", r"\.(css|js|png|jpg|svg|ico)$",
         r"/store/", r"/pricing", r"/download", r"/careers", r"/jobs",
@@ -1320,14 +1355,19 @@ def date_validate_node(state: NewsCollectionState) -> NewsCollectionState:
     """Strictly filter items to the requested date range.
 
     - Items with a known date outside the range are removed.
-    - Items with no date are kept (flagged with _undated=True) for Stage 4
-      programmatic verification to handle.
+    - date_to is treated as end-of-day so articles published on that day
+      with a time component (e.g. 15:48:26) are not incorrectly dropped.
+    - Items with no date are kept (flagged with _undated=True).
     """
+    from datetime import timedelta
     date_from = _parse_date(state["date_from"])
     date_to_dt = _parse_date(state["date_to"])
 
     if not date_from or not date_to_dt:
         return state
+
+    # Extend date_to to end-of-day so time-stamped articles on that day are kept
+    date_to_eod = date_to_dt.replace(hour=23, minute=59, second=59)
 
     in_range: List[Dict] = []
     undated: List[Dict] = []
@@ -1338,7 +1378,7 @@ def date_validate_node(state: NewsCollectionState) -> NewsCollectionState:
         pub_dt = _parse_date(pub)
         if pub_dt is None:
             undated.append({**item, "_undated": True})
-        elif date_from <= pub_dt <= date_to_dt:
+        elif date_from <= pub_dt <= date_to_eod:
             in_range.append(item)
         else:
             out_of_range += 1
