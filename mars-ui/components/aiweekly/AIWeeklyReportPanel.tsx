@@ -130,13 +130,13 @@ export default function AIWeeklyReportPanel({ hook, stageNum, onBack }: AIWeekly
             <div className="flex items-center gap-3">
                 {taskId && (
                     <>
-                        <a href={getApiUrl(`/api/aiweekly/${taskId}/download-pdf/report_final.md`)} download>
+                        <a href={`/api/aiweekly/${taskId}/download-pdf/report_final.md`} download>
                             <Button variant="primary" size="sm"><Download className="w-4 h-4 mr-1.5" />Download PDF</Button>
                         </a>
                         <Button onClick={() => setShowFullView(true)} variant="secondary" size="sm">
                             <Eye className="w-4 h-4 mr-1.5" />View Online
                         </Button>
-                        <a href={getApiUrl(`/api/aiweekly/${taskId}/download/report_final.md`)} download>
+                        <a href={`/api/aiweekly/${taskId}/download/report_final.md`} download>
                             <Button variant="secondary" size="sm"><FileDown className="w-4 h-4 mr-1.5" />Download MD</Button>
                         </a>
                     </>
@@ -169,11 +169,11 @@ export default function AIWeeklyReportPanel({ hook, stageNum, onBack }: AIWeekly
                                         >
                                             <Eye className="w-3.5 h-3.5" />View PDF
                                         </button>
-                                        <a href={getApiUrl(`/api/aiweekly/${taskId}/download-pdf/${file}`)} download
+                                        <a href={`/api/aiweekly/${taskId}/download-pdf/${file}`} download
                                             className="text-xs font-medium hover:underline flex items-center gap-1" style={{ color: 'var(--mars-color-primary)' }}>
                                             <FileDown className="w-3.5 h-3.5" />PDF
                                         </a>
-                                        <a href={getApiUrl(`/api/aiweekly/${taskId}/download/${file}`)}
+                                        <a href={`/api/aiweekly/${taskId}/download/${file}`}
                                             className="text-xs font-medium hover:underline flex items-center gap-1" style={{ color: 'var(--mars-color-text-secondary)' }} download>
                                             <Download className="w-3.5 h-3.5" />MD
                                         </a>
@@ -219,7 +219,7 @@ export default function AIWeeklyReportPanel({ hook, stageNum, onBack }: AIWeekly
                             </h2>
                             <div className="flex items-center gap-2">
                                 {taskId && (
-                                    <a href={getApiUrl(`/api/aiweekly/${taskId}/download-pdf/report_final.md`)} download="AI_Weekly_Report.pdf">
+                                    <a href={`/api/aiweekly/${taskId}/download-pdf/report_final.md`} download="AI_Weekly_Report.pdf">
                                         <Button variant="primary" size="sm">
                                             <Download className="w-3.5 h-3.5 mr-1" />PDF
                                         </Button>
@@ -237,7 +237,7 @@ export default function AIWeeklyReportPanel({ hook, stageNum, onBack }: AIWeekly
                         <div className="flex-1 overflow-hidden" style={{ backgroundColor: '#ffffff' }}>
                             {taskId ? (
                                 <iframe
-                                    src={getApiUrl(`/api/aiweekly/${taskId}/download-pdf/report_final.md?inline=true`) + '#toolbar=1&navpanes=0'}
+                                    src={`/api/aiweekly/${taskId}/download-pdf/report_final.md?inline=true#toolbar=1&navpanes=0`}
                                     className="w-full h-full border-0"
                                     style={{ backgroundColor: '#ffffff' }}
                                     title="AI Weekly Report PDF Preview"
@@ -288,7 +288,7 @@ export default function AIWeeklyReportPanel({ hook, stageNum, onBack }: AIWeekly
                             </h2>
                             <div className="flex items-center gap-2">
                                 {taskId && (
-                                    <a href={getApiUrl(`/api/aiweekly/${taskId}/download-pdf/${viewingArtifact}`)} download>
+                                    <a href={`/api/aiweekly/${taskId}/download-pdf/${viewingArtifact}`} download>
                                         <Button variant="primary" size="sm">
                                             <Download className="w-3.5 h-3.5 mr-1" />Download PDF
                                         </Button>
@@ -305,7 +305,7 @@ export default function AIWeeklyReportPanel({ hook, stageNum, onBack }: AIWeekly
                         <div className="flex-1 overflow-hidden" style={{ backgroundColor: '#ffffff' }}>
                             {taskId ? (
                                 <iframe
-                                    src={getApiUrl(`/api/aiweekly/${taskId}/download-pdf/${viewingArtifact}?inline=true`) + '#toolbar=1&navpanes=0'}
+                                    src={`/api/aiweekly/${taskId}/download-pdf/${viewingArtifact}?inline=true#toolbar=1&navpanes=0`}
                                     className="w-full h-full border-0"
                                     style={{ backgroundColor: '#ffffff' }}
                                     title={`${viewingArtifact} PDF Preview`}

@@ -7,14 +7,18 @@ Tier 1 — Structured (cmbagent news tools)
   Reliable, structured coverage of major AI companies and curated AI sources.
   Nodes: broad_sweep, curated_sources, company_scrape, newsapi_gnews
 
+  Source gates:
+    "official-ai-websites" → rss_feeds_node (official company RSS feeds)
+    "ai-blogs"             → curated_sources_node (cmbagent curated AI blog search)
+
 Tier 2 — Global topic search (topic-driven, no hard-coded companies/links)
   Searches the whole internet for the user's actual topic strings.
   Works for ANY topic: "healthcare AI", "autonomous driving", "video generation", etc.
-  Nodes: rss_feeds, custom_sources, topic_arxiv_search, topic_web_search,
+  Nodes: custom_sources, topic_arxiv_search, topic_web_search,
          web_surfer_agent, perplexity_agent
 
 Post-processing
-  gap_fill → date_validate → semantic_dedup → END
+  gap_fill → date_validate → llm_date_filter → semantic_dedup → END
 
 Key design principles
 ─────────────────────
@@ -31,7 +35,7 @@ import logging
 import os
 import re
 import time
-from calendar import timegm
+
 from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, TypedDict
@@ -56,48 +60,81 @@ _CORE_AI_COMPANIES: List[str] = [
     "ibm", "mistral", "xai", "deepseek", "cohere", "perplexity",
 ]
 
-# Global AI news RSS feeds — official company and research sources only.
-# Third-party news aggregators (TechCrunch, VentureBeat, The Verge, etc.) are
-# intentionally excluded so all items link back to primary/official sources.
+# Official AI, Quantum and Robotics sources.
+# Both RSS/Atom feeds AND HTML pages are listed for each source:
+#   - RSS gives structured dates, summaries, and works on JS-rendered sites
+#   - HTML catches any articles not yet in the RSS window (RSS often caps at 10-20)
+# Sources without a public RSS feed have HTML only.
 _GLOBAL_RSS_FEEDS: List[str] = [
-    # AI research, news, and engineering sources
-"https://openai.com/news/",
-"https://openai.com/research/",
-"https://www.anthropic.com/news",
-"https://www.anthropic.com/research",
+    # ── OpenAI (no RSS) ──────────────────────────────────────────────────────
+    "https://openai.com/news/",
+    "https://openai.com/research/",
 
-"https://blog.google/",
-"https://blog.google/technology/ai/",
-"https://blog.google/innovation-and-ai/",
-"https://blog.google/innovation-and-ai/technology/ai/",
-"https://blog.google/innovation-and-ai/technology/research/",
-"https://research.google/blog/",
-"https://deepmind.google/blog/",
+    # ── Anthropic (no RSS) ───────────────────────────────────────────────────
+    "https://www.anthropic.com/news",
+    "https://www.anthropic.com/research",
 
-"https://blogs.microsoft.com/",
-"https://blogs.microsoft.com/ai/",
-"https://microsoft.ai/",
-"https://microsoft.ai/blog/",
-"https://www.microsoft.com/en-us/research/blog/",
-"https://azure.microsoft.com/en-us/blog/",
-"https://azure.microsoft.com/en-us/blog/content-type/announcements/",
+    # ── Google / DeepMind (no public RSS) ────────────────────────────────────
+    "https://blog.google/",
+    "https://blog.google/technology/ai/",
+    "https://blog.google/innovation-and-ai/",
+    "https://blog.google/innovation-and-ai/technology/ai/",
+    "https://blog.google/innovation-and-ai/technology/research/",
+    "https://research.google/blog/",
+    "https://deepmind.google/blog/",
 
-"https://ai.meta.com/blog/",
-"https://ai.meta.com/research/",
+    # ── Microsoft ─────────────────────────────────────────────────────────────
+    "https://blogs.microsoft.com/feed/",
+    "https://blogs.microsoft.com/",
+    "https://blogs.microsoft.com/ai/feed/",
+    "https://blogs.microsoft.com/ai/",
+    "https://www.microsoft.com/en-us/research/blog/feed/",
+    "https://www.microsoft.com/en-us/research/blog/",
+    "https://azure.microsoft.com/en-us/blog/feed/",
+    "https://azure.microsoft.com/en-us/blog/",
+    "https://microsoft.ai/",
+    "https://microsoft.ai/blog/",
 
-"https://aws.amazon.com/blogs/aws/",
-"https://aws.amazon.com/blogs/machine-learning/",
+    # ── Meta (no RSS) ────────────────────────────────────────────────────────
+    "https://ai.meta.com/blog/",
+    "https://ai.meta.com/research/",
 
-"https://blogs.nvidia.com/blog/category/ai/",
-"https://blogs.nvidia.com/blog/tag/agentic-ai/",
-"https://blogs.nvidia.com/blog/tag/inference/",
-"https://developer.nvidia.com/blog/",
+    # ── Amazon / AWS ──────────────────────────────────────────────────────────
+    "https://aws.amazon.com/blogs/feed/",
+    "https://aws.amazon.com/blogs/",
+    "https://aws.amazon.com/blogs/aws/feed/",
+    "https://aws.amazon.com/blogs/aws/",
+    "https://aws.amazon.com/blogs/machine-learning/feed/",
+    "https://aws.amazon.com/blogs/machine-learning/",
 
-"https://huggingface.co/blog",
+    # ── NVIDIA ────────────────────────────────────────────────────────────────
+    "https://blogs.nvidia.com/blog/category/ai/feed/",
+    "https://blogs.nvidia.com/blog/category/ai/",
+    "https://blogs.nvidia.com/blog/tag/agentic-ai/feed/",
+    "https://blogs.nvidia.com/blog/tag/agentic-ai/",
+    "https://blogs.nvidia.com/blog/tag/inference/feed/",
+    "https://blogs.nvidia.com/blog/tag/inference/",
+    "https://developer.nvidia.com/blog/feed/",
+    "https://developer.nvidia.com/blog/",
+    "https://developer.nvidia.com/blog/tag/robotics/feed/",
+    "https://developer.nvidia.com/blog/tag/robotics/",
 
-"https://cohere.com/blog",
+    # ── HuggingFace ───────────────────────────────────────────────────────────
+    "https://huggingface.co/blog/feed.xml",
+    "https://huggingface.co/blog",
 
-"https://www.perplexity.ai/hub/blog",
+    # ── Cohere (no RSS) ───────────────────────────────────────────────────────
+    "https://cohere.com/blog",
+
+    # ── Perplexity (no RSS) ───────────────────────────────────────────────────
+    "https://www.perplexity.ai/hub/blog",
+
+    # ── Cloudflare — AI Gateway, Workers AI ───────────────────────────────────
+    "https://blog.cloudflare.com/rss/",
+    "https://blog.cloudflare.com/",
+
+    # ── Quantum Computing (no RSS) ────────────────────────────────────────────
+    "https://www.quantinuum.com/news",
 ]
 
 # Add companies not in cmbagent's _OFFICIAL_NEWS_PAGES, and fix Anthropic's
@@ -105,8 +142,10 @@ _GLOBAL_RSS_FEEDS: List[str] = [
 # and are handled by rss_feeds_node — no need to duplicate them here.
 if _news_tools is not None:
     _news_tools._OFFICIAL_NEWS_PAGES.update({
-        "cohere":     ["https://cohere.com/blog"],
-        "perplexity": ["https://www.perplexity.ai/hub/blog"],
+        "cohere":      ["https://cohere.com/blog"],
+        "perplexity":  ["https://www.perplexity.ai/hub/blog"],
+        "cloudflare":  ["https://blog.cloudflare.com/"],
+        "quantinuum":  ["https://www.quantinuum.com/news"],
     })
     _news_tools._COMPANY_RSS_FEEDS["anthropic"] = []
 
@@ -180,13 +219,6 @@ def _parse_date(date_str: str) -> Optional[datetime]:
             continue
     return None
 
-
-def _parse_struct_time(st) -> Optional[datetime]:
-    """Convert a feedparser time.struct_time (9-tuple) to a naive datetime."""
-    try:
-        return datetime.utcfromtimestamp(timegm(st))
-    except Exception:
-        return None
 
 
 def _merge_items(
@@ -409,9 +441,9 @@ def curated_sources_node(state: NewsCollectionState) -> NewsCollectionState:
     Running per-topic (not one generic query) ensures curated sources
     return relevant articles for any topic the user specifies.
 
-    Only runs when "curated-ai-websites" is selected in the UI.
+    Only runs when "ai-blogs" is selected in the UI.
     """
-    if "curated-ai-websites" not in (state.get("sources") or []):
+    if "ai-blogs" not in (state.get("sources") or []):
         return state
     try:
         from cmbagent.external_tools.news_tools import curated_ai_sources_search
@@ -684,103 +716,58 @@ def newsapi_gnews_node(state: NewsCollectionState) -> NewsCollectionState:
 # ─── Tier 1 + common feeds ────────────────────────────────────────────────────
 
 def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
-    """Parse global AI RSS feeds via feedparser (date-filtered, no topic constraint).
+    """Scrape official AI company blog pages for recent news items.
 
-    Always runs — hardcoded feeds are independent of source checkbox selection.
+    Only runs when "official-ai-websites" is selected in the UI.
+    Items with a known date outside the requested window are dropped immediately;
+    undated items are kept and handled by date_validate_node later.
     """
-    try:
-        import feedparser
-    except ImportError:
-        return {**state, "errors": state["errors"] + ["rss_feeds: feedparser not installed"]}
+    if "official-ai-websites" not in (state.get("sources") or []):
+        return state
 
     collected = list(state["collected_items"])
     seen = list(state["seen_keys"])
     errors = list(state["errors"])
+
     date_from = _parse_date(state["date_from"])
     date_to_dt = _parse_date(state["date_to"])
     date_to_eod = date_to_dt.replace(hour=23, minute=59, second=59) if date_to_dt else None
 
-    # Known RSS feed URLs for blog pages that don't auto-discover well
-    _KNOWN_FEEDS = {
-        "https://huggingface.co/blog":                        "https://huggingface.co/blog/feed.xml",
-        "https://aws.amazon.com/blogs/aws/":                  "https://aws.amazon.com/blogs/aws/feed/",
-        "https://aws.amazon.com/blogs/machine-learning/":     "https://aws.amazon.com/blogs/machine-learning/feed/",
-        "https://blogs.nvidia.com/blog/category/ai/":         "https://blogs.nvidia.com/feed/",
-        "https://blogs.nvidia.com/blog/tag/agentic-ai/":      "https://blogs.nvidia.com/blog/tag/agentic-ai/feed/",
-        "https://blogs.nvidia.com/blog/tag/inference/":       "https://blogs.nvidia.com/blog/tag/inference/feed/",
-        "https://developer.nvidia.com/blog/":                 "https://developer.nvidia.com/blog/feed/",
-    }
-
-    def _try_feed(url: str):
-        """Resolve blog URL to its RSS feed. Checks known map first, then auto-discovers."""
-        resolved = _KNOWN_FEEDS.get(url.rstrip("/") + "/") or _KNOWN_FEEDS.get(url.rstrip("/")) or url
-        f = feedparser.parse(resolved)
-        if f.entries:
-            return f
-        # Auto-discovery fallback for unmapped URLs
-        for suffix in ("/feed/", "/feed.xml", "/rss/", "/atom/"):
-            candidate = url.rstrip("/") + suffix
-            f2 = feedparser.parse(candidate)
-            if f2.entries:
-                return f2
-        return f
-
-    for feed_url in _GLOBAL_RSS_FEEDS:
+    for page_url in _GLOBAL_RSS_FEEDS:
         try:
-            feed = _try_feed(feed_url)
-            source_label = feed.feed.get("title") or feed_url.split("/")[2]
+            label = page_url.split("/")[2]
+            raw_items = _scrape_page_permissive(page_url, label, date_from=date_from, date_to=date_to_eod)
+            if not raw_items:
+                errors.append(f"official_blogs/{page_url}: no items scraped")
+                continue
 
-            items: List[Dict] = []
-            for entry in feed.entries:
-                # Prefer feedparser's pre-parsed struct_time for reliable date extraction
-                pub_dt: Optional[datetime] = None
-                pub_str = ""
-                if entry.get("published_parsed"):
-                    pub_dt = _parse_struct_time(entry.published_parsed)
-                    pub_str = pub_dt.strftime("%Y-%m-%d") if pub_dt else ""
-                elif entry.get("updated_parsed"):
-                    pub_dt = _parse_struct_time(entry.updated_parsed)
-                    pub_str = pub_dt.strftime("%Y-%m-%d") if pub_dt else ""
-                else:
-                    raw = entry.get("published") or entry.get("updated") or ""
-                    pub_dt = _parse_date(raw)
-                    pub_str = raw[:10] if raw else ""
-
-                if pub_dt and date_from and date_to_eod:
+            # Secondary filter: drop any dated item still outside the window
+            in_window: List[Dict] = []
+            for item in raw_items:
+                pub = item.get("published_at") or ""
+                pub_dt = _parse_date(pub) if pub else None
+                if pub_dt is not None and date_from and date_to_eod:
                     if not (date_from <= pub_dt <= date_to_eod):
                         continue
+                in_window.append(item)
 
-                title = (entry.get("title") or "").strip()
-                url = (entry.get("link") or "").strip()
-                summary = _strip_html(entry.get("summary") or "")[:500]
-                if title and url:
-                    items.append({"title": title, "url": url, "summary": summary,
-                                   "source": source_label, "published_at": pub_str})
-
-            if items:
+            if in_window:
                 before = len(collected)
-                collected, seen = _merge_items(items, collected, seen)
-                print(f"[Collection] RSS/{source_label}: {len(collected) - before} new items")
-            else:
-                # No usable RSS items — feedparser may have parsed HTML as a
-                # partial/bozo feed with entries that fail date/title checks.
-                # Always fall back to HTML scraping for non-RSS URLs.
-                try:
-                    html_items = _scrape_page_permissive(feed_url, source_label)
-                    if html_items:
-                        before = len(collected)
-                        collected, seen = _merge_items(html_items, collected, seen)
-                        print(f"[Collection] HTML/{source_label}: {len(collected) - before} new items")
-                except Exception:
-                    pass
+                collected, seen = _merge_items(in_window, collected, seen)
+                print(f"[Collection] Official/{label}: {len(collected) - before} new items")
         except Exception as exc:
-            errors.append(f"rss/{feed_url}: {exc}")
+            errors.append(f"official_blogs/{page_url}: {exc}")
         time.sleep(0.3)
 
     return {**state, "collected_items": collected, "seen_keys": seen, "errors": errors}
 
 
-def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
+def _scrape_page_permissive(
+    page_url: str,
+    label: str,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+) -> List[Dict]:
     """Scrape a blog/news page and return all article-like links.
 
     Unlike cmbagent's _direct_scrape_page_links, this does NOT require a URL
@@ -833,7 +820,41 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
         # Generic single-word/short category labels
         "science", "technology", "robotics", "infrastructure",
     }
-    _DATE_PAT = r"([A-Za-z]{3}\s+\d{1,2},?\s+20\d{2})"
+    # Matches common date text formats — used in inline text and anchor text.
+    # Group 1 of each variant normalised by _parse_any_date() below.
+    _MONTH_NAMES = (
+        r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?"
+        r"|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?"
+    )
+    # "Oct 14, 2026" or "October 14, 2026"
+    _PAT_MDY = rf"({_MONTH_NAMES})\s+(\d{{1,2}}),?\s+(20\d{{2}})"
+    # "14 Oct 2026" or "14 October 2026"
+    _PAT_DMY = rf"(\d{{1,2}})\s+({_MONTH_NAMES})\s+(20\d{{2}})"
+    # ISO / slash: "2026-10-14" or "2026/10/14"
+    _PAT_ISO = r"(20\d{2})[-/](0[1-9]|1[0-2])[-/](\d{2})"
+
+    def _parse_any_date(s: str) -> str:
+        """Try multiple date formats; return YYYY-MM-DD or ''."""
+        for pat, fmts in [
+            (_PAT_MDY, ["%b %d %Y", "%B %d %Y"]),
+            (_PAT_DMY, ["%d %b %Y", "%d %B %Y"]),
+        ]:
+            m = _re.search(pat, s, _re.I)
+            if m:
+                groups = m.groups()
+                if pat == _PAT_MDY:
+                    candidate = f"{groups[0]} {groups[1]} {groups[2]}"
+                else:
+                    candidate = f"{groups[0]} {groups[1]} {groups[2]}"
+                for fmt in fmts:
+                    try:
+                        return _dt.datetime.strptime(candidate, fmt).strftime("%Y-%m-%d")
+                    except ValueError:
+                        pass
+        m = _re.search(_PAT_ISO, s)
+        if m:
+            return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+        return ""
 
     def _apex(netloc: str) -> str:
         """Return the company name that owns the domain.
@@ -855,13 +876,7 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
         return parts[-2] if len(parts) >= 2 else parts[0]
 
     def _parse_inline_date(s: str) -> str:
-        m = _re.search(_DATE_PAT, s)
-        if m:
-            try:
-                return _dt.datetime.strptime(m.group(1).replace(",", ""), "%b %d %Y").strftime("%Y-%m-%d")
-            except ValueError:
-                pass
-        return ""
+        return _parse_any_date(s)
 
     try:
         req = _Req(page_url, headers={
@@ -883,21 +898,72 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
     base_domain = parsed_base.netloc.lower().replace("www.", "")
     base_apex   = _apex(parsed_base.netloc)
 
-    # Strategy 2: build position-indexed map of <time datetime="..."> dates
+    # Strategy 0a: extract article dates from JSON-LD structured data.
+    # Many sites (AWS, Microsoft, etc.) include @type=Article blocks with datePublished.
+    import json as _json
+    _jsonld_dates: Dict[str, str] = {}
+    for jld_m in _re.finditer(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        html, _re.I | _re.S
+    ):
+        try:
+            data = _json.loads(jld_m.group(1))
+            entries = data if isinstance(data, list) else [data]
+            for entry in entries:
+                # Handle @graph wrapper (common on WordPress/Yoast sites)
+                if isinstance(entry, dict) and "@graph" in entry:
+                    entries = entry["@graph"]
+                if not isinstance(entry, dict):
+                    continue
+                url_key = (entry.get("url") or entry.get("@id") or "").rstrip("/").lower()
+                date_raw = (entry.get("datePublished") or entry.get("dateCreated") or "")[:10]
+                if url_key and date_raw:
+                    _jsonld_dates[url_key] = date_raw
+        except Exception:
+            pass
+
+    # Strategy 0b: extract dates from <meta> tags (og:article:published_time,
+    # article:published_time, DC.date). These appear in article pages but
+    # some CMS list pages embed per-card meta in JSON islands.
+    _meta_date = ""
+    for meta_m in _re.finditer(
+        r'<meta[^>]+(?:property|name)=["\'](?:article:published_time|og:article:published_time|DC\.date)["\'][^>]*content=["\']([^"\']+)["\']',
+        html, _re.I
+    ):
+        candidate = meta_m.group(1)[:10]
+        if _re.match(r"20\d{2}-\d{2}-\d{2}", candidate):
+            _meta_date = candidate
+            break
+    # Also check reversed attribute order: content="..." name="..."
+    if not _meta_date:
+        for meta_m in _re.finditer(
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*(?:property|name)=["\'](?:article:published_time|og:article:published_time|DC\.date)["\']',
+            html, _re.I
+        ):
+            candidate = meta_m.group(1)[:10]
+            if _re.match(r"20\d{2}-\d{2}-\d{2}", candidate):
+                _meta_date = candidate
+                break
+
+    # Strategy 2: build position-indexed map of <time datetime="..."> dates.
+    # Also captures "dateTime", "date-time" attribute variants used by some CMSes.
     _time_positions: List[tuple] = []
-    for tm in _re.finditer(r'<time[^>]+datetime="([^"]*)"', html, _re.I):
+    for tm in _re.finditer(r'<time[^>]+(?:datetime|date-time|dateTime)=["\']([^"\']*)["\']', html, _re.I):
         raw_dt = tm.group(1).strip()
         d = ""
         iso_m = _re.match(r"(20\d{2}-\d{2}-\d{2})", raw_dt)
         if iso_m:
             d = iso_m.group(1)
         else:
-            for fmt in ("%B %Y", "%b %Y"):
-                try:
-                    d = _dt.datetime.strptime(raw_dt[:16], fmt).strftime("%Y-%m-01")
-                    break
-                except ValueError:
-                    pass
+            # Try full parse for partial ISO (e.g. "2026-10")
+            d = _parse_any_date(raw_dt) or ""
+            if not d:
+                for fmt in ("%B %Y", "%b %Y"):
+                    try:
+                        d = _dt.datetime.strptime(raw_dt[:16], fmt).strftime("%Y-%m-01")
+                        break
+                    except ValueError:
+                        pass
         if d:
             _time_positions.append((tm.start(), d))
 
@@ -968,34 +1034,51 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
         if not raw_text or len(raw_text) < 5 or len(raw_text) > 400:
             continue
 
-        # -- Date extraction --
+        # -- Date extraction (strategies tried in priority order) --
         pub_date = ""
 
-        # Strategy 1: date anywhere in anchor text
-        date_m = _re.search(_DATE_PAT, raw_text)
-        if date_m:
-            pub_date = _parse_inline_date(date_m.group(1))
-            before = raw_text[:date_m.start()].strip()
-            after  = raw_text[date_m.end():].strip()
-            # Use whichever side of the date has more real title content
-            raw_text = before if len(before) >= len(after) else after
-            # Strip a leading CamelCase category prefix (e.g. "AnnouncementsTitle")
-            raw_text = _re.sub(r"^([A-Z][a-z]{3,})(?=[A-Z])", "", raw_text).strip()
-            raw_text = _re.sub(r"^([A-Z][a-z]{3,})\s+(?=[A-Z])", "", raw_text).strip()
+        # Strategy 0: JSON-LD structured data (most accurate — explicit datePublished)
+        url_key = f"{link_parsed.scheme}://{link_parsed.netloc}{link_parsed.path}".rstrip("/").lower()
+        if url_key in _jsonld_dates:
+            pub_date = _jsonld_dates[url_key]
 
-        # Strategy 2: nearest <time datetime> tag
+        # Strategy 0b: data-date / data-published / data-datetime on the <a> tag itself
+        if not pub_date:
+            for data_attr in ("data-date", "data-published", "data-datetime", "data-pubdate", "data-time"):
+                da_m = _re.search(rf'\b{data_attr}=["\']([^"\']+)["\']', attrs_str, _re.I)
+                if da_m:
+                    candidate = _parse_any_date(da_m.group(1)) or da_m.group(1)[:10]
+                    if _re.match(r"20\d{2}-\d{2}-\d{2}", candidate):
+                        pub_date = candidate
+                        break
+
+        # Strategy 1: date anywhere in anchor text (handles Anthropic, Cohere, X.ai)
+        if not pub_date:
+            inline = _parse_any_date(raw_text)
+            if inline:
+                pub_date = inline
+                # Remove the date portion from the display title
+                for pat in (_PAT_MDY, _PAT_DMY, _PAT_ISO):
+                    dm = _re.search(pat, raw_text, _re.I)
+                    if dm:
+                        before = raw_text[:dm.start()].strip()
+                        after  = raw_text[dm.end():].strip()
+                        raw_text = before if len(before) >= len(after) else after
+                        break
+                # Strip leading CamelCase category prefix (e.g. "AnnouncementsTitle")
+                raw_text = _re.sub(r"^([A-Z][a-z]{3,})(?=[A-Z])", "", raw_text).strip()
+                raw_text = _re.sub(r"^([A-Z][a-z]{3,})\s+(?=[A-Z])", "", raw_text).strip()
+
+        # Strategy 2: nearest <time datetime> tag within 2 000 chars
         if not pub_date:
             pub_date = _nearest_time_date(match.start())
 
-        # Strategy 3: inline date in the 500 HTML chars preceding this anchor
+        # Strategy 3: any date in the 500 HTML chars preceding this anchor
         if not pub_date:
             ctx = html[max(0, match.start() - 500): match.start()]
-            # Use the LAST (most recent / closest) date found before this anchor
-            ctx_dates = _re.findall(_DATE_PAT, ctx)
-            if ctx_dates:
-                pub_date = _parse_inline_date(ctx_dates[-1])
+            pub_date = _parse_any_date(ctx)
 
-        # Strategy 4: date in URL path  /YYYY/MM/DD/
+        # Strategy 4: date in URL path  /YYYY/MM/DD/ or /YYYY/MM/
         if not pub_date:
             url_date = _re.search(r"/(20\d{2})[/-](0[1-9]|1[0-2])[/-](\d{2})?", href)
             if url_date:
@@ -1008,6 +1091,12 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
             continue
         if title.lower() in _NAV_TITLES:
             continue
+
+        # Date filter: drop items with a known date outside the requested window
+        if pub_date and date_from and date_to:
+            pub_dt = _parse_date(pub_date)
+            if pub_dt and not (date_from <= pub_dt <= date_to):
+                continue
 
         items.append({"title": title, "url": href, "source": label,
                       "published_at": pub_date, "summary": ""})
@@ -1034,6 +1123,10 @@ def custom_sources_node(state: NewsCollectionState) -> NewsCollectionState:
     collected = list(state["collected_items"])
     seen = list(state["seen_keys"])
     errors = list(state["errors"])
+
+    date_from  = _parse_date(state["date_from"])
+    date_to_dt = _parse_date(state["date_to"])
+    date_to_eod = date_to_dt.replace(hour=23, minute=59, second=59) if date_to_dt else None
 
     if _news_tools is not None:
         _fetch_rss = getattr(_news_tools, "_fetch_rss_items", None)
@@ -1070,7 +1163,7 @@ def custom_sources_node(state: NewsCollectionState) -> NewsCollectionState:
         # 3. Permissive fallback if step 2 found nothing
         if not scraped:
             try:
-                scraped = _scrape_page_permissive(url, label)
+                scraped = _scrape_page_permissive(url, label, date_from=date_from, date_to=date_to_eod)
             except Exception as exc:
                 errors.append(f"custom/{label}: {exc}")
 
@@ -1352,22 +1445,23 @@ def gap_fill_node(state: NewsCollectionState) -> NewsCollectionState:
 
 
 def date_validate_node(state: NewsCollectionState) -> NewsCollectionState:
-    """Strictly filter items to the requested date range.
+    """Filter items to the requested date range.
 
-    - Items with a known date outside the range are removed.
-    - date_to is treated as end-of-day so articles published on that day
-      with a time component (e.g. 15:48:26) are not incorrectly dropped.
-    - Items with no date are kept (flagged with _undated=True).
+    Items with a known date outside the range are removed.
+    Undated items (JS-rendered pages where static scraping can't extract dates)
+    are kept only if the URL does not embed a year that falls outside the range.
+    This catches sidebar/related-post links whose URLs contain /YYYY/ patterns.
     """
-    from datetime import timedelta
+    import re as _re
+
     date_from = _parse_date(state["date_from"])
     date_to_dt = _parse_date(state["date_to"])
 
     if not date_from or not date_to_dt:
         return state
 
-    # Extend date_to to end-of-day so time-stamped articles on that day are kept
     date_to_eod = date_to_dt.replace(hour=23, minute=59, second=59)
+    valid_years = set(range(date_from.year, date_to_dt.year + 1))
 
     in_range: List[Dict] = []
     undated: List[Dict] = []
@@ -1377,15 +1471,125 @@ def date_validate_node(state: NewsCollectionState) -> NewsCollectionState:
         pub = item.get("published_at") or item.get("date") or ""
         pub_dt = _parse_date(pub)
         if pub_dt is None:
-            undated.append({**item, "_undated": True})
+            # If the URL embeds a year outside our valid range, discard the item.
+            # Catches old sidebar/related-post links like /blog/2024/old-article.
+            url = item.get("url") or ""
+            url_year_m = _re.search(r"/(20\d{2})[^0-9]", url)
+            if url_year_m and int(url_year_m.group(1)) not in valid_years:
+                out_of_range += 1
+                continue
+            item["_undated"] = True
+            undated.append(item)
         elif date_from <= pub_dt <= date_to_eod:
             in_range.append(item)
         else:
             out_of_range += 1
 
+    kept = in_range + undated
     print(f"[Collection] Date filter: {len(in_range)} in-range, "
-          f"{len(undated)} undated, {out_of_range} removed")
-    return {**state, "collected_items": in_range + undated}
+          f"{len(undated)} undated (kept), {out_of_range} out-of-range (dropped)")
+    return {**state, "collected_items": kept}
+
+
+def llm_date_filter_node(state: NewsCollectionState) -> NewsCollectionState:
+    """Verify publication dates for undated items by searching DuckDuckGo News.
+
+    Some blog pages (Google, DeepMind, etc.) are JS-rendered: our static HTML
+    scraper can extract article links and titles but NOT publication dates because
+    those are injected at runtime by JavaScript.  These items are flagged
+    ``_undated=True`` by date_validate_node.
+
+    For each undated item this node fires a DuckDuckGo News search using the
+    article title.  DuckDuckGo's news index stores real publication dates, so
+    the first matching search result gives us the actual date without fetching
+    the article page itself.
+
+    Decision logic:
+      - Date found AND within range  → keep (update published_at with real date)
+      - Date found AND outside range → drop
+      - No matching result found     → keep (err on the side of inclusion)
+
+    Capped at MAX_VERIFY items to keep total wall-clock time reasonable.
+    Falls back gracefully if ddgs is not installed.
+    """
+    from urllib.parse import urlparse as _up
+
+    undated = [item for item in state["collected_items"] if item.get("_undated")]
+    dated   = [item for item in state["collected_items"] if not item.get("_undated")]
+
+    if not undated:
+        return state
+
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        logger.warning("llm_date_filter: ddgs not installed — skipping web date verify")
+        return state
+
+    date_from  = _parse_date(state["date_from"])
+    date_to_dt = _parse_date(state["date_to"])
+    date_to_eod = date_to_dt.replace(hour=23, minute=59, second=59) if date_to_dt else None
+
+    MAX_VERIFY = 60  # search at most this many items; keep the rest unchecked
+    to_check   = undated[:MAX_VERIFY]
+    unchecked  = undated[MAX_VERIFY:]
+
+    verified: List[Dict] = []
+    dropped = 0
+
+    for item in to_check:
+        title    = (item.get("title") or "")[:100]
+        item_url = item.get("url") or ""
+        item_path = _up(item_url).path.rstrip("/").lower() if item_url else ""
+
+        found_date = ""
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.news(title, max_results=5))
+
+            for r in results:
+                r_url   = r.get("url") or r.get("link") or ""
+                r_title = (r.get("title") or "").lower()
+                r_date  = r.get("date") or ""
+                if not r_date:
+                    continue
+
+                # Match by URL path (most reliable)
+                r_path = _up(r_url).path.rstrip("/").lower() if r_url else ""
+                if item_path and r_path and (item_path == r_path or item_url == r_url):
+                    found_date = r_date
+                    break
+
+                # Fallback: title similarity ≥ 0.80
+                sim = SequenceMatcher(None, title.lower(), r_title).ratio()
+                if sim >= 0.80:
+                    found_date = r_date
+                    break
+
+            time.sleep(0.5)  # be polite to DDG
+
+        except Exception as exc:
+            logger.debug(f"llm_date_filter ddg search failed for '{title[:40]}': {exc}")
+
+        if found_date:
+            pub_dt = _parse_date(found_date)
+            if pub_dt and date_from and date_to_eod:
+                if date_from <= pub_dt <= date_to_eod:
+                    verified.append({**item, "published_at": found_date[:10], "_undated": False})
+                    print(f"[DateVerify] KEEP  {title[:55]} ({found_date[:10]})")
+                else:
+                    dropped += 1
+                    print(f"[DateVerify] DROP  {title[:55]} ({found_date[:10]})")
+                continue
+        # No date found from search — keep the item rather than drop valid content
+        verified.append(item)
+
+    print(
+        f"[Collection] Web date verify: {len(verified)} kept, "
+        f"{dropped} dropped, {len(unchecked)} unchecked (kept) "
+        f"from {len(undated)} undated items"
+    )
+    return {**state, "collected_items": dated + verified + unchecked}
 
 
 def semantic_dedup_node(state: NewsCollectionState) -> NewsCollectionState:
@@ -1457,9 +1661,10 @@ def build_news_graph():
     graph.add_node("perplexity_agent",     perplexity_agent_node)
 
     # Post-processing
-    graph.add_node("gap_fill",        gap_fill_node)
-    graph.add_node("date_validate",   date_validate_node)
-    graph.add_node("semantic_dedup",  semantic_dedup_node)
+    graph.add_node("gap_fill",          gap_fill_node)
+    graph.add_node("date_validate",     date_validate_node)
+    graph.add_node("llm_date_filter",   llm_date_filter_node)
+    graph.add_node("semantic_dedup",    semantic_dedup_node)
 
     # Sequential edges
     graph.set_entry_point("broad_sweep")
@@ -1475,7 +1680,8 @@ def build_news_graph():
     graph.add_edge("web_surfer_agent",     "perplexity_agent")
     graph.add_edge("perplexity_agent",     "gap_fill")
     graph.add_edge("gap_fill",             "date_validate")
-    graph.add_edge("date_validate",        "semantic_dedup")
+    graph.add_edge("date_validate",        "llm_date_filter")
+    graph.add_edge("llm_date_filter",      "semantic_dedup")
     graph.add_edge("semantic_dedup",       END)
 
     return graph.compile()

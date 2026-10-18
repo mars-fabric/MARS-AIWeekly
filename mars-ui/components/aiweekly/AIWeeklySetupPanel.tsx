@@ -25,7 +25,8 @@ const AVAILABLE_SOURCES = [
     { id: 'github', label: 'GitHub Releases' },
     { id: 'press-releases', label: 'Press Releases' },
     { id: 'company-announcements', label: 'Company Announcements' },
-    { id: 'curated-ai-websites', label: 'Curated AI Websites / Blogs' },
+    { id: 'official-ai-websites', label: 'Official AI Websites' },
+    { id: 'ai-blogs', label: 'AI Blogs & Curated' },
 ]
 
 export default function AIWeeklySetupPanel({ hook, onNext }: AIWeeklySetupPanelProps) {
@@ -41,7 +42,7 @@ export default function AIWeeklySetupPanel({ hook, onNext }: AIWeeklySetupPanelP
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
     })
     const [topics, setTopics] = useState<string[]>(AVAILABLE_TOPICS.map(t => t.id))
-    const [sources, setSources] = useState<string[]>([])
+    const [sources, setSources] = useState<string[]>(['official-ai-websites'])
     const [style, setStyle] = useState<'concise' | 'detailed' | 'technical'>('concise')
     const [customSources, setCustomSources] = useState('')
     const [submitted, setSubmitted] = useState(false)

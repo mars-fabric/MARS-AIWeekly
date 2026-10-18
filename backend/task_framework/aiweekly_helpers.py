@@ -62,6 +62,25 @@ def _build_model_kwargs(stage_num: int, config_overrides: dict | None = None) ->
     )
 
 
+def _build_agent_model_kwargs(agent_name: str, config_overrides: dict | None = None) -> dict:
+    """Build model kwargs for sub-task agents (idea_maker, idea_hater, web_surfer, perplexity).
+
+    one_shot() only accepts explicit model params for researcher, engineer, web_surfer.
+    For all others (idea_maker, idea_hater, perplexity, summarizer) the model is fixed
+    by the cmbagent registry — we still pass default_llm_model/default_formatter_model.
+    """
+    overrides = dict(config_overrides or {})
+    model = overrides.get("model", "gpt-4o")
+    kwargs: dict = {
+        "default_llm_model": overrides.get("orchestration_model", "gpt-4o-mini"),
+        "default_formatter_model": overrides.get("formatter_model", "gpt-4o-mini"),
+    }
+    # Only these agents expose a model-override param in one_shot()
+    if agent_name in ("researcher", "engineer", "web_surfer"):
+        kwargs[f"{agent_name}_model"] = model
+    return kwargs
+
+
 # ─── Style helpers ───────────────────────────────────────────────────────
 
 _STYLE_RULES = {
@@ -582,14 +601,29 @@ def fit_content_to_context(
 
 def extract_stage_result(results: dict) -> str:
     """Extract the researcher's output from one_shot results."""
-    chat_history = results.get("chat_history", [])
+    return extract_agent_result(results, "researcher")
 
-    # Prefer researcher (raw markdown) over researcher_response_formatter
-    # (code-wrapped) to avoid unterminated-string-literal issues when
-    # the formatter's repr()-encoded script is truncated by token limits.
-    for agent_name in ("researcher", "researcher_response_formatter"):
+
+# Message name variants per agent (primary + possible formatter)
+_AGENT_MESSAGE_NAMES: dict[str, list[str]] = {
+    "researcher": ["researcher", "researcher_response_formatter"],
+    "web_surfer": ["web_surfer"],
+    "idea_maker": ["idea_maker", "idea_maker_response_formatter"],
+    "idea_hater": ["idea_hater", "idea_hater_response_formatter"],
+    "perplexity": ["perplexity"],
+    "summarizer": ["summarizer", "summarizer_response_formatter"],
+    "engineer":   ["engineer", "engineer_response_formatter"],
+}
+
+
+def extract_agent_result(results: dict, agent_name: str) -> str:
+    """Extract the named agent's output from one_shot results."""
+    chat_history = results.get("chat_history", [])
+    names = _AGENT_MESSAGE_NAMES.get(agent_name, [agent_name])
+
+    for name in names:
         for msg in reversed(chat_history):
-            if msg.get("name") == agent_name:
+            if msg.get("name") == name:
                 content = msg.get("content", "")
                 if content and content.strip():
                     content = _strip_code_wrapper(content)
@@ -597,7 +631,7 @@ def extract_stage_result(results: dict) -> str:
                     content = _strip_truncation_markers(content)
                     return _strip_html_comments(content)
 
-    # Broad fallback
+    # Broad fallback — longest message wins
     best = ""
     for msg in chat_history:
         content = msg.get("content", "")
@@ -605,13 +639,13 @@ def extract_stage_result(results: dict) -> str:
             best = content
 
     if best:
-        logger.warning("AI Weekly extraction used broad fallback, length=%d", len(best))
+        logger.warning("AI Weekly extraction used broad fallback (agent=%s, len=%d)", agent_name, len(best))
         best = _strip_code_wrapper(best)
         best = extract_clean_markdown(best)
         best = _strip_truncation_markers(best)
         return _strip_html_comments(best)
 
-    raise ValueError("No agent output found in chat history for AI Weekly stage")
+    raise ValueError(f"No agent output found in chat history for agent={agent_name}")
 
 
 def save_stage_file(content: str, work_dir: str, filename: str) -> str:
@@ -852,31 +886,26 @@ def build_curation_merge_kwargs(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Stage 3 — Report Generation (two-pass: analyst → writer)
+# Stage 3 — Report Generation (researcher analyst → researcher writer)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def build_generation_analysis_kwargs(
     curated_items: str,
     date_from: str,
     date_to: str,
-    style: str,
     topics: list,
     work_dir: str,
     api_keys: dict | None = None,
     config_overrides: dict | None = None,
     callbacks=None,
 ) -> dict:
-    """Build kwargs for one_shot() — Stage 3 Pass A: analyst outlines report."""
-    from backend.task_framework.prompts.aiweekly.stages import (
-        generation_analyst_prompt,
-    )
+    """Build kwargs for one_shot(agent='researcher') — Stage 3 analyst: outline themes."""
+    from backend.task_framework.prompts.aiweekly.stages import generation_analyst_prompt
     from backend.task_framework.token_utils import count_tokens, get_model_limits
 
     sub_dir = create_work_dir(work_dir, "generation_analysis")
-
     compact_curated = _compact_curated_for_review(curated_items)
 
-    # Ensure curated items fit within model context for analyst
     model = (config_overrides or {}).get("model", "gpt-4o")
     max_ctx, max_output = get_model_limits(model)
     input_budget = max_ctx - max_output - 1500
@@ -884,36 +913,23 @@ def build_generation_analysis_kwargs(
     task = generation_analyst_prompt.format(
         date_from=date_from,
         date_to=date_to,
-        style=style,
-        topics=", ".join(topics) if topics else "AI, ML",
         curated_items=compact_curated,
     )
 
     task_tokens = count_tokens(task, model)
     if task_tokens > input_budget:
-        # Fit curated items to budget
-        prompt_without_curated = generation_analyst_prompt.format(
-            date_from=date_from,
-            date_to=date_to,
-            style=style,
-            topics=", ".join(topics) if topics else "AI, ML",
-            curated_items="",
+        prompt_overhead = count_tokens(
+            generation_analyst_prompt.format(date_from=date_from, date_to=date_to, curated_items=""),
+            model,
         )
-        overhead_tokens = count_tokens(prompt_without_curated, model)
-        curated_budget = input_budget - overhead_tokens - 500
         compact_curated, was_truncated = fit_content_to_context(
-            compact_curated, model, reserved_tokens=(max_ctx - curated_budget),
+            compact_curated, model, reserved_tokens=max_ctx - (input_budget - prompt_overhead - 500),
         )
         if was_truncated:
-            logger.warning(
-                "Stage 3 analyst: curated_items truncated to fit context (%d tokens over budget)",
-                task_tokens - input_budget,
-            )
+            logger.warning("Stage 3 analyst: curated_items truncated to fit context")
         task = generation_analyst_prompt.format(
             date_from=date_from,
             date_to=date_to,
-            style=style,
-            topics=", ".join(topics) if topics else "AI, ML",
             curated_items=compact_curated,
         )
 
@@ -938,11 +954,17 @@ def build_generation_kwargs(
     topics: list,
     work_dir: str,
     report_outline: str = "",
+    enriched_data: str = "",
+    citations: str = "",
     api_keys: dict | None = None,
     config_overrides: dict | None = None,
     callbacks=None,
 ) -> dict:
-    """Build kwargs for one_shot() — Stage 3 Pass B: write report from outline."""
+    """Build kwargs for one_shot(agent='researcher') — Stage 3 writer pass.
+
+    enriched_data: web_surfer output with real article summaries (may be empty)
+    citations: perplexity academic citation data for arXiv items (may be empty)
+    """
     from backend.task_framework.prompts.aiweekly.stages import (
         generation_writer_prompt,
     )
@@ -956,6 +978,8 @@ def build_generation_kwargs(
         topics=", ".join(topics) if topics else "AI, ML",
         style_rule=get_style_rule(style),
         report_outline=report_outline,
+        enriched_data=enriched_data or "(none)",
+        citations=citations or "(none)",
         curated_items=curated_items,
     )
 
@@ -1027,6 +1051,148 @@ def build_merge_kwargs(
         clear_work_dir=False,
         callbacks=callbacks,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Stage 2 — Sub-task agents: web_surfer (enrichment), summarizer (uploads)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def build_url_enrich_kwargs(
+    items_missing_summaries: list[dict],
+    work_dir: str,
+    api_keys: dict | None = None,
+    config_overrides: dict | None = None,
+    callbacks=None,
+) -> dict:
+    """Build kwargs for one_shot(agent='web_surfer') — enrich articles with real content.
+
+    Called after curation when items have missing or very short summaries.
+    web_surfer browses the actual source URL and extracts real article content.
+    """
+    from backend.task_framework.prompts.aiweekly.stages import enrich_urls_prompt
+
+    sub_dir = create_work_dir(work_dir, "url_enrichment")
+
+    items_text = "\n".join(
+        f"- {item.get('title', 'Unknown')} | {item.get('url', '')}"
+        for item in items_missing_summaries[:20]
+    )
+
+    task = enrich_urls_prompt.format(items_with_urls=items_text)
+
+    return dict(
+        task=task,
+        agent="web_surfer",
+        max_rounds=15,
+        max_n_attempts=2,
+        **_build_agent_model_kwargs("web_surfer", config_overrides),
+        work_dir=str(sub_dir),
+        api_keys=api_keys,
+        clear_work_dir=False,
+        callbacks=callbacks,
+    )
+
+
+def build_document_summary_kwargs(
+    document_text: str,
+    filename: str,
+    work_dir: str,
+    api_keys: dict | None = None,
+    config_overrides: dict | None = None,
+    callbacks=None,
+) -> dict:
+    """Build kwargs for one_shot(agent='summarizer') — compress uploaded documents.
+
+    Called when user uploads PDF/text files. Summarizer extracts structured news
+    entries from the document before curation.
+    """
+    from backend.task_framework.prompts.aiweekly.stages import document_summarize_prompt
+
+    sub_dir = create_work_dir(work_dir, "doc_summary")
+
+    task = document_summarize_prompt.format(
+        filename=filename,
+        document_text=document_text[:40_000],
+    )
+
+    return dict(
+        task=task,
+        agent="summarizer",
+        max_rounds=10,
+        max_n_attempts=2,
+        **_build_agent_model_kwargs("summarizer", config_overrides),
+        work_dir=str(sub_dir),
+        api_keys=api_keys,
+        clear_work_dir=False,
+        callbacks=callbacks,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Stage 3 — Sub-task agents: perplexity (citations)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def build_citation_kwargs(
+    analyst_text: str,
+    work_dir: str,
+    api_keys: dict | None = None,
+    config_overrides: dict | None = None,
+    callbacks=None,
+) -> dict:
+    """Build kwargs for one_shot(agent='perplexity') — enrich analyst outline with arXiv citations.
+
+    perplexity receives the analyst outline as a paragraph and returns the SAME text
+    with inline [1][2] arXiv citations added wherever relevant. Only called when
+    PERPLEXITY_API_KEY is set.
+    """
+    from backend.task_framework.prompts.aiweekly.stages import citation_prompt
+
+    sub_dir = create_work_dir(work_dir, "citations")
+    task = citation_prompt.format(analyst_text=analyst_text)
+
+    return dict(
+        task=task,
+        agent="perplexity",
+        max_rounds=10,
+        max_n_attempts=2,
+        **_build_agent_model_kwargs("perplexity", config_overrides),
+        work_dir=str(sub_dir),
+        api_keys=api_keys,
+        clear_work_dir=False,
+        callbacks=callbacks,
+    )
+
+
+def extract_items_missing_summaries(curated_items: str, min_summary_len: int = 30) -> list[dict]:
+    """Find curated items that have no or very short summaries.
+
+    Returns a list of {title, url} dicts for web_surfer enrichment.
+    """
+    lines = curated_items.splitlines()
+    missing: list[dict] = []
+    current_title = ""
+    current_url = ""
+    current_summary = ""
+
+    def _flush():
+        if current_title and current_url and len(current_summary.strip()) < min_summary_len:
+            missing.append({"title": current_title, "url": current_url})
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("- **"):
+            _flush()
+            current_title = re.sub(r'\*\*', '', stripped.split('|')[0]).strip().lstrip('- ')
+            current_url = ""
+            current_summary = ""
+        elif re.match(r'\s*https?://', stripped):
+            if not current_url:
+                current_url = stripped
+        elif stripped and not stripped.startswith('[') and not stripped.startswith('|'):
+            current_summary += " " + stripped
+
+    _flush()
+    return missing
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1220,6 +1386,50 @@ def build_review_output(
         "artifacts": artifacts,
         "chat_history": chat_history,
     }
+
+
+def build_url_verify_kwargs(
+    draft_report: str,
+    work_dir: str,
+    api_keys: dict | None = None,
+    config_overrides: dict | None = None,
+    callbacks=None,
+    max_urls: int = 15,
+) -> dict:
+    """Build kwargs for one_shot(agent='web_surfer') — verify report URLs.
+
+    Extracts unique URLs from the draft report and asks web_surfer to
+    browse each one and confirm it is accessible and matches AI news content.
+    """
+    from backend.task_framework.prompts.aiweekly.stages import url_verify_prompt
+
+    sub_dir = create_work_dir(work_dir, "url_verify")
+
+    urls = re.findall(r'https?://[^\s\)\]\>"\']+', draft_report)
+    seen: set[str] = set()
+    unique_urls: list[str] = []
+    for u in urls:
+        u = u.rstrip(".,;:)")
+        if u not in seen:
+            seen.add(u)
+            unique_urls.append(u)
+        if len(unique_urls) >= max_urls:
+            break
+
+    report_urls = "\n".join(f"- {u}" for u in unique_urls)
+    task = url_verify_prompt.format(report_urls=report_urls)
+
+    return dict(
+        task=task,
+        agent="web_surfer",
+        max_rounds=10,
+        max_n_attempts=2,
+        **_build_agent_model_kwargs("web_surfer", config_overrides),
+        work_dir=str(sub_dir),
+        api_keys=api_keys,
+        clear_work_dir=False,
+        callbacks=callbacks,
+    )
 
 
 # ─── Programmatic verification (post-LLM) ───────────────────────────────

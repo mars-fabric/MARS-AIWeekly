@@ -493,17 +493,43 @@ async def _run_aiweekly_one_shot_stage(
     elif stage_num == 3:
         curated_items = shared_state.get("curated_items", "")
 
-        # ── Pass A: Analyst — theme analysis + report outline ──
+        # ── web_surfer: enrich articles missing real summaries ──
+        enriched_data = ""
+        missing_items = helpers.extract_items_missing_summaries(curated_items)
+        if missing_items:
+            with _console_lock:
+                _console_buffers.setdefault(buf_key, []).append(
+                    f"Running web_surfer (enriching {len(missing_items)} articles with missing summaries)..."
+                )
+            enrich_kwargs = helpers.build_url_enrich_kwargs(
+                items_missing_summaries=missing_items,
+                work_dir=work_dir,
+                config_overrides=config_overrides,
+                callbacks=callbacks,
+            )
+            original_stdout, original_stderr = sys.stdout, sys.stderr
+            capture_out = _ConsoleCapture(buf_key, original_stdout)
+            capture_err = _ConsoleCapture(buf_key, original_stderr)
+            try:
+                sys.stdout = capture_out
+                sys.stderr = capture_err
+                enrich_result = await asyncio.to_thread(_run_one_shot_sync, **enrich_kwargs)
+            finally:
+                sys.stdout = original_stdout
+                sys.stderr = original_stderr
+            enriched_data = helpers.extract_agent_result(enrich_result, "web_surfer")
+            helpers.save_stage_file(enriched_data, work_dir, "enriched_articles.md")
+
+        # ── researcher analyst: theme analysis + report outline ──
         with _console_lock:
             _console_buffers.setdefault(buf_key, []).append(
-                "Running analyst pass (theme analysis & report outline)..."
+                "Running researcher analyst (theme analysis & report outline)..."
             )
 
         analysis_kwargs = helpers.build_generation_analysis_kwargs(
             curated_items=curated_items,
             date_from=date_from,
             date_to=date_to,
-            style=style,
             topics=topics,
             work_dir=work_dir,
             config_overrides=config_overrides,
@@ -516,15 +542,42 @@ async def _run_aiweekly_one_shot_stage(
         try:
             sys.stdout = capture_out
             sys.stderr = capture_err
-            analysis_result = await asyncio.to_thread(
-                _run_one_shot_sync, **analysis_kwargs,
-            )
+            analysis_result = await asyncio.to_thread(_run_one_shot_sync, **analysis_kwargs)
         finally:
             sys.stdout = original_stdout
             sys.stderr = original_stderr
 
-        report_outline = helpers.extract_stage_result(analysis_result)
+        report_outline = helpers.extract_agent_result(analysis_result, "researcher")
         helpers.save_stage_file(report_outline, work_dir, "report_outline.md")
+
+        # ── perplexity: inject arXiv citations into analyst outline (gated) ──
+        import os as _os
+        citations = ""
+        cited_outline = report_outline
+        if _os.environ.get("PERPLEXITY_API_KEY"):
+            with _console_lock:
+                _console_buffers.setdefault(buf_key, []).append(
+                    "Running perplexity (injecting arXiv citations into analyst outline)..."
+                )
+            citation_kwargs = helpers.build_citation_kwargs(
+                analyst_text=report_outline,
+                work_dir=work_dir,
+                config_overrides=config_overrides,
+                callbacks=callbacks,
+            )
+            original_stdout, original_stderr = sys.stdout, sys.stderr
+            capture_out = _ConsoleCapture(buf_key, original_stdout)
+            capture_err = _ConsoleCapture(buf_key, original_stderr)
+            try:
+                sys.stdout = capture_out
+                sys.stderr = capture_err
+                citation_result = await asyncio.to_thread(_run_one_shot_sync, **citation_kwargs)
+            finally:
+                sys.stdout = original_stdout
+                sys.stderr = original_stderr
+            cited_outline = helpers.extract_agent_result(citation_result, "perplexity")
+            citations = cited_outline
+            helpers.save_stage_file(cited_outline, work_dir, "citations.md")
 
         # ── Pass B: Writer — chunked generation ──
         chunk_budget = helpers._get_chunk_budget(config_overrides.get("model", "gpt-4o"))
@@ -544,7 +597,9 @@ async def _run_aiweekly_one_shot_stage(
                 style=style,
                 topics=topics,
                 work_dir=work_dir,
-                report_outline=report_outline,
+                report_outline=cited_outline,
+                enriched_data=enriched_data,
+                citations=citations,
                 config_overrides=config_overrides,
                 callbacks=callbacks,
             )
@@ -564,7 +619,9 @@ async def _run_aiweekly_one_shot_stage(
                     style=style,
                     topics=topics,
                     work_dir=work_dir,
-                    report_outline=report_outline,
+                    report_outline=cited_outline,
+                    enriched_data=enriched_data,
+                    citations=citations,
                     config_overrides=config_overrides,
                     callbacks=callbacks,
                 )
@@ -767,6 +824,33 @@ async def _run_aiweekly_one_shot_stage(
                     f"Critic pass complete — {len(review_critique)} chars. "
                     "Running editor pass..."
                 )
+
+        # ── web_surfer: URL content verification (opt-in) ──
+        if config_overrides.get("verify_urls", False):
+            with _console_lock:
+                _console_buffers.setdefault(buf_key, []).append(
+                    "Running web_surfer (URL verification)..."
+                )
+            verify_kwargs = helpers.build_url_verify_kwargs(
+                draft_report=draft_report,
+                work_dir=work_dir,
+                config_overrides=config_overrides,
+                callbacks=callbacks,
+            )
+            original_stdout, original_stderr = sys.stdout, sys.stderr
+            capture_out = _ConsoleCapture(buf_key, original_stdout)
+            capture_err = _ConsoleCapture(buf_key, original_stderr)
+            try:
+                sys.stdout = capture_out
+                sys.stderr = capture_err
+                verify_result = await asyncio.to_thread(_run_one_shot_sync, **verify_kwargs)
+            finally:
+                sys.stdout = original_stdout
+                sys.stderr = original_stderr
+            url_notes = helpers.extract_agent_result(verify_result, "web_surfer")
+            helpers.save_stage_file(url_notes, work_dir, "url_verification.md")
+            all_chat_history.extend(verify_result.get("chat_history", []))
+            review_critique = review_critique + "\n\n---\nURL Verification:\n" + url_notes
 
         # ── Pass B: Editor — apply corrections + final polish ──
         kwargs = helpers.build_review_kwargs(
