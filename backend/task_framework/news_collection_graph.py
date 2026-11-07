@@ -47,57 +47,82 @@ logger = logging.getLogger(__name__)
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-# Fixed set of core AI companies always scraped via cmbagent (Tier 1).
-# Kept small and stable — these are the companies whose blogs reliably publish
-# AI news worth including regardless of topic.
-_CORE_AI_COMPANIES: List[str] = [
-    "openai", "anthropic", "google", "meta", "microsoft",
-    "nvidia", "huggingface", "amazon", "deepmind", "apple",
-    "ibm", "mistral", "xai", "deepseek", "cohere", "perplexity",
+# Single source of truth for all tracked AI companies.
+# slug    — internal key used as company identifier throughout the pipeline
+# name    — display name used to generate DuckDuckGo search queries
+# product — primary product/focus (makes search queries more precise)
+# github  — official repos monitored for release notes
+_COMPANY_CONFIGS: Dict[str, Dict] = {
+    "openai":      {"name": "OpenAI",       "product": "GPT LLM",           "github": ["openai/openai-python"]},
+    "anthropic":   {"name": "Anthropic",    "product": "Claude LLM",         "github": ["anthropics/anthropic-sdk-python"]},
+    "google":      {"name": "Google",       "product": "Gemini multimodal",  "github": []},
+    "meta":        {"name": "Meta",         "product": "Llama open-source",  "github": []},
+    "microsoft":   {"name": "Microsoft",    "product": "Copilot SLM",        "github": ["microsoft/autogen", "microsoft/semantic-kernel"]},
+    "nvidia":      {"name": "NVIDIA",       "product": "GPU accelerator",    "github": []},
+    "huggingface": {"name": "Hugging Face", "product": "ML open-source",     "github": ["huggingface/transformers", "huggingface/diffusers"]},
+    "amazon":      {"name": "Amazon",       "product": "Bedrock foundation", "github": []},
+    "deepmind":    {"name": "DeepMind",     "product": "AlphaFold research", "github": ["google-deepmind/gemma"]},
+    "apple":       {"name": "Apple",        "product": "on-device ML",       "github": []},
+    "ibm":         {"name": "IBM",          "product": "watsonx enterprise", "github": []},
+    "mistral":     {"name": "Mistral",      "product": "open-source LLM",   "github": ["mistralai/mistral-common"]},
+    "xai":         {"name": "xAI",          "product": "Grok LLM",           "github": []},
+    "deepseek":    {"name": "DeepSeek",     "product": "reasoning LLM",      "github": []},
+    "cohere":      {"name": "Cohere",       "product": "enterprise NLP RAG", "github": []},
+    "perplexity":  {"name": "Perplexity",   "product": "search",             "github": []},
+}
+
+# AI ecosystem repos not owned by a single company above.
+_ECOSYSTEM_REPOS: List[str] = [
+    "langchain-ai/langchain",
+    "vllm-project/vllm",
+    "ollama/ollama",
 ]
+
+# All derived from _COMPANY_CONFIGS — do not edit separately.
+_CORE_AI_COMPANIES: List[str] = list(_COMPANY_CONFIGS)
+_COMPANY_DDG_QUERIES: Dict[str, str] = {
+    slug: f"{cfg['name']} {cfg['product']} AI announcement"
+    for slug, cfg in _COMPANY_CONFIGS.items()
+}
 
 # Global AI news RSS feeds — official company and research sources only.
 # Third-party news aggregators (TechCrunch, VentureBeat, The Verge, etc.) are
 # intentionally excluded so all items link back to primary/official sources.
 _GLOBAL_RSS_FEEDS: List[str] = [
     # AI research, news, and engineering sources
-"https://openai.com/news/",
-"https://openai.com/research/",
-"https://www.anthropic.com/news",
-"https://www.anthropic.com/research",
+    "https://openai.com/news/rss.xml",
+    "https://www.anthropic.com/news",
+    "https://www.anthropic.com/research",
 
-"https://blog.google/",
-"https://blog.google/technology/ai/",
-"https://blog.google/innovation-and-ai/",
-"https://blog.google/innovation-and-ai/technology/ai/",
-"https://blog.google/innovation-and-ai/technology/research/",
-"https://research.google/blog/",
-"https://deepmind.google/blog/",
+    "https://blog.google/",
+    "https://blog.google/technology/ai/",
+    "https://blog.google/innovation-and-ai/",
+    "https://blog.google/innovation-and-ai/technology/ai/",
+    "https://blog.google/innovation-and-ai/technology/research/",
+    "https://research.google/blog/",
+    "https://deepmind.google/blog/",
 
-"https://blogs.microsoft.com/",
-"https://blogs.microsoft.com/ai/",
-"https://microsoft.ai/",
-"https://microsoft.ai/blog/",
-"https://www.microsoft.com/en-us/research/blog/",
-"https://azure.microsoft.com/en-us/blog/",
-"https://azure.microsoft.com/en-us/blog/content-type/announcements/",
+    "https://blogs.microsoft.com/",
+    "https://blogs.microsoft.com/ai/",
+    "https://microsoft.ai/",
+    "https://microsoft.ai/blog/",
+    "https://www.microsoft.com/en-us/research/blog/",
+    "https://azure.microsoft.com/en-us/blog/",
+    "https://azure.microsoft.com/en-us/blog/content-type/announcements/",
 
-"https://ai.meta.com/blog/",
-"https://ai.meta.com/research/",
+    "https://engineering.fb.com/",
 
-"https://aws.amazon.com/blogs/aws/",
-"https://aws.amazon.com/blogs/machine-learning/",
+    "https://aws.amazon.com/blogs/aws/",
+    "https://aws.amazon.com/blogs/machine-learning/",
 
-"https://blogs.nvidia.com/blog/category/ai/",
-"https://blogs.nvidia.com/blog/tag/agentic-ai/",
-"https://blogs.nvidia.com/blog/tag/inference/",
-"https://developer.nvidia.com/blog/",
+    "https://blogs.nvidia.com/blog/tag/artificial-intelligence/",
+    "https://blogs.nvidia.com/blog/tag/agentic-ai/",
+    "https://blogs.nvidia.com/blog/tag/inference/",
+    "https://developer.nvidia.com/blog/",
 
-"https://huggingface.co/blog",
+    "https://huggingface.co/blog/feed.xml",
 
-"https://cohere.com/blog",
-
-"https://www.perplexity.ai/hub/blog",
+    "https://cohere.com/blog",
 ]
 
 # Add companies not in cmbagent's _OFFICIAL_NEWS_PAGES, and fix Anthropic's
@@ -110,20 +135,36 @@ if _news_tools is not None:
     })
     _news_tools._COMPANY_RSS_FEEDS["anthropic"] = []
 
-# Major AI repos monitored for release notes via the GitHub public API.
 _GITHUB_AI_REPOS: List[str] = [
-    "openai/openai-python",
-    "anthropics/anthropic-sdk-python",
-    "huggingface/transformers",
-    "huggingface/diffusers",
-    "langchain-ai/langchain",
-    "microsoft/autogen",
-    "microsoft/semantic-kernel",
-    "mistralai/mistral-inference",
-    "vllm-project/vllm",
-    "ollama/ollama",
-    "google-deepmind/gemma",
-]
+    repo for cfg in _COMPANY_CONFIGS.values() for repo in cfg["github"]
+] + _ECOSYSTEM_REPOS
+
+# Blog page → actual RSS feed URL for pages that don't auto-discover well.
+# Used by rss_feeds_node._try_feed(); defined here to avoid rebuilding on every call.
+_KNOWN_FEEDS: Dict[str, str] = {
+    "https://aws.amazon.com/blogs/aws/":                         "https://aws.amazon.com/blogs/aws/feed/",
+    "https://aws.amazon.com/blogs/machine-learning/":            "https://aws.amazon.com/blogs/machine-learning/feed/",
+    "https://blogs.nvidia.com/blog/tag/artificial-intelligence/": "https://blogs.nvidia.com/feed/",
+    "https://blogs.nvidia.com/blog/tag/agentic-ai/":             "https://blogs.nvidia.com/blog/tag/agentic-ai/feed/",
+    "https://blogs.nvidia.com/blog/tag/inference/":              "https://blogs.nvidia.com/blog/tag/inference/feed/",
+    "https://developer.nvidia.com/blog/":                        "https://developer.nvidia.com/blog/feed/",
+}
+
+# Short topic alias → expanded arXiv search query.
+# Used by _topic_to_arxiv_query(); defined here to avoid rebuilding on every call.
+_ARXIV_EXPANSION: Dict[str, str] = {
+    "llm":        "large language model transformer generation",
+    "cv":         "computer vision image recognition object detection",
+    "rl":         "reinforcement learning reward policy gradient",
+    "robotics":   "robotics manipulation locomotion autonomous",
+    "quantum":    "quantum computing machine learning",
+    "ai":         "artificial intelligence deep learning neural network",
+    "ml":         "machine learning optimization generalization",
+    "nlp":        "natural language processing text generation",
+    "multimodal": "multimodal vision language foundation model",
+    "agents":     "autonomous agent tool use reasoning LLM",
+    "diffusion":  "diffusion model image generation synthesis",
+}
 
 # Topic coverage thresholds
 MIN_COVERAGE_PER_TOPIC = 5    # items per topic before gap-fill triggers
@@ -244,20 +285,6 @@ def _topic_to_arxiv_query(topic: str) -> str:
     so the graph works for any user-provided input.
     """
     q = topic.lower().replace("-", " ").replace("_", " ").strip()
-    # Short-form aliases → expanded arXiv-friendly queries
-    _ARXIV_EXPANSION: Dict[str, str] = {
-        "llm": "large language model transformer generation",
-        "cv": "computer vision image recognition object detection",
-        "rl": "reinforcement learning reward policy gradient",
-        "robotics": "robotics manipulation locomotion autonomous",
-        "quantum": "quantum computing quantum machine learning",
-        "ai": "artificial intelligence deep learning neural network",
-        "ml": "machine learning optimization generalization",
-        "nlp": "natural language processing text generation",
-        "multimodal": "multimodal vision language foundation model",
-        "agents": "autonomous agent tool use reasoning LLM",
-        "diffusion": "diffusion model image generation synthesis",
-    }
     return _ARXIV_EXPANSION.get(q, f"{q} deep learning")
 
 
@@ -486,27 +513,6 @@ def company_scrape_node(state: NewsCollectionState) -> NewsCollectionState:
     return {**state, "collected_items": collected, "seen_keys": seen, "errors": errors}
 
 
-# Company name → natural search query (avoids ambiguous single-word searches)
-_COMPANY_DDG_QUERIES: Dict[str, str] = {
-    "openai":       "OpenAI GPT announcement",
-    "anthropic":    "Anthropic Claude AI announcement",
-    "google":       "Google AI Gemini announcement",
-    "meta":         "Meta AI Llama announcement",
-    "microsoft":    "Microsoft AI Copilot Azure announcement",
-    "nvidia":       "NVIDIA AI GPU announcement",
-    "huggingface":  "Hugging Face AI model release",
-    "amazon":       "Amazon AWS AI Bedrock announcement",
-    "deepmind":     "Google DeepMind AI research",
-    "apple":        "Apple AI machine learning announcement",
-    "ibm":          "IBM AI watsonx announcement",
-    "mistral":      "Mistral AI model release",
-    "xai":          "xAI Grok announcement",
-    "deepseek":     "DeepSeek AI model release",
-    "cohere":       "Cohere AI enterprise announcement",
-    "perplexity":   "Perplexity AI search announcement",
-}
-
-
 def company_ddg_news_node(state: NewsCollectionState) -> NewsCollectionState:
     """DuckDuckGo news search for each core AI company — no API key required.
 
@@ -699,17 +705,6 @@ def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
     date_from = _parse_date(state["date_from"])
     date_to_dt = _parse_date(state["date_to"])
     date_to_eod = date_to_dt.replace(hour=23, minute=59, second=59) if date_to_dt else None
-
-    # Known RSS feed URLs for blog pages that don't auto-discover well
-    _KNOWN_FEEDS = {
-        "https://huggingface.co/blog":                        "https://huggingface.co/blog/feed.xml",
-        "https://aws.amazon.com/blogs/aws/":                  "https://aws.amazon.com/blogs/aws/feed/",
-        "https://aws.amazon.com/blogs/machine-learning/":     "https://aws.amazon.com/blogs/machine-learning/feed/",
-        "https://blogs.nvidia.com/blog/category/ai/":         "https://blogs.nvidia.com/feed/",
-        "https://blogs.nvidia.com/blog/tag/agentic-ai/":      "https://blogs.nvidia.com/blog/tag/agentic-ai/feed/",
-        "https://blogs.nvidia.com/blog/tag/inference/":       "https://blogs.nvidia.com/blog/tag/inference/feed/",
-        "https://developer.nvidia.com/blog/":                 "https://developer.nvidia.com/blog/feed/",
-    }
 
     def _try_feed(url: str):
         """Resolve blog URL to its RSS feed. Checks known map first, then auto-discovers."""
