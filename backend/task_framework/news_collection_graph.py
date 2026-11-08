@@ -148,6 +148,10 @@ _KNOWN_FEEDS: Dict[str, str] = {
     "https://blogs.nvidia.com/blog/tag/agentic-ai/":             "https://blogs.nvidia.com/blog/tag/agentic-ai/feed/",
     "https://blogs.nvidia.com/blog/tag/inference/":              "https://blogs.nvidia.com/blog/tag/inference/feed/",
     "https://developer.nvidia.com/blog/":                        "https://developer.nvidia.com/blog/feed/",
+    "https://azure.microsoft.com/en-us/blog/":                   "https://azure.microsoft.com/en-us/blog/feed/",
+    # blog.cloudflare.com/rss/ times out; HTML scraping works fine — no mapping needed
+    "https://huggingface.co/blog":                               "https://huggingface.co/blog/feed.xml",
+    # blogs.microsoft.com/ai/feed/ is 410 Gone — omitted
 }
 
 # Short topic alias → expanded arXiv search query.
@@ -200,25 +204,36 @@ def _strip_html(text: str) -> str:
 
 
 def _parse_date(date_str: str) -> Optional[datetime]:
-    """Parse a date string in ISO, RFC 2822, and common formats."""
+    """Parse a date string in ISO, RFC 2822, and common formats across sites."""
     if not date_str:
         return None
     s = str(date_str).strip()
-    for fmt in (
-        "%Y-%m-%dT%H:%M:%SZ",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d",
-        "%d %b %Y",
-        "%B %d, %Y",
-        "%a, %d %b %Y %H:%M:%S %z",
-        "%a, %d %b %Y %H:%M:%S %Z",
-        "%d %b %Y %H:%M:%S %z",
-    ):
-        try:
-            return datetime.strptime(s[:31], fmt).replace(tzinfo=None)
-        except (ValueError, IndexError):
-            continue
+    # Strip trailing timezone abbreviations strptime can't handle (UTC, GMT, PST…)
+    s_no_tz = re.sub(r'\s+[A-Z]{2,5}$', '', s).strip()
+    for candidate in (s, s_no_tz):
+        for fmt in (
+            "%Y-%m-%dT%H:%M:%SZ",
+            "%Y-%m-%dT%H:%M:%S%z",         # ISO with offset (+00:00)
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d",
+            "%Y/%m/%d",                     # 2026/11/08
+            "%d %b %Y",                     # 08 Nov 2026
+            "%d %B %Y",                     # 08 November 2026
+            "%b %d, %Y",                    # Nov 08, 2026
+            "%b %d %Y",                     # Nov 08 2026
+            "%B %d, %Y",                    # November 08, 2026
+            "%B %d %Y",                     # November 08 2026
+            "%a, %d %b %Y %H:%M:%S %z",
+            "%a, %d %b %Y %H:%M:%S %Z",
+            "%d %b %Y %H:%M:%S %z",
+            "%m/%d/%Y",                     # 11/08/2026 (US)
+            "%d/%m/%Y",                     # 08/11/2026 (EU)
+        ):
+            try:
+                return datetime.strptime(candidate[:32], fmt).replace(tzinfo=None)
+            except (ValueError, IndexError):
+                continue
     return None
 
 
@@ -693,6 +708,8 @@ def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
     """Parse global AI RSS feeds via feedparser (date-filtered, no topic constraint).
 
     Always runs — hardcoded feeds are independent of source checkbox selection.
+    When 'official-websites' is in sources, also processes every URL from
+    cmbagent's _OFFICIAL_NEWS_PAGES and _COMPANY_RSS_FEEDS (deduplicated).
     """
     try:
         import feedparser
@@ -720,7 +737,22 @@ def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
                 return f2
         return f
 
-    for feed_url in _GLOBAL_RSS_FEEDS:
+    # Build the feed URL list: always include hardcoded feeds; optionally add
+    # all cmbagent official pages + RSS feeds when 'official-websites' selected.
+    feed_urls_to_process = list(_GLOBAL_RSS_FEEDS)
+    if "official-websites" in (state.get("sources") or []) and _news_tools is not None:
+        cmbagent_urls: set = set()
+        for urls in getattr(_news_tools, "_OFFICIAL_NEWS_PAGES", {}).values():
+            cmbagent_urls.update(u for u in (urls or []) if u)
+        for urls in getattr(_news_tools, "_COMPANY_RSS_FEEDS", {}).values():
+            cmbagent_urls.update(u for u in (urls or []) if u)
+        already = set(_GLOBAL_RSS_FEEDS)
+        extras = sorted(u for u in cmbagent_urls if u.startswith("http") and u not in already)
+        if extras:
+            print(f"[Collection] Official Websites: adding {len(extras)} cmbagent URLs")
+            feed_urls_to_process.extend(extras)
+
+    for feed_url in feed_urls_to_process:
         try:
             feed = _try_feed(feed_url)
             source_label = feed.feed.get("title") or feed_url.split("/")[2]
@@ -828,7 +860,8 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
         # Generic single-word/short category labels
         "science", "technology", "robotics", "infrastructure",
     }
-    _DATE_PAT = r"([A-Za-z]{3}\s+\d{1,2},?\s+20\d{2})"
+    # Matches both abbreviated ("Nov 8, 2026") and full ("November 8, 2026") month names
+    _DATE_PAT = r"([A-Za-z]{3,9}\s+\d{1,2},?\s+20\d{2})"
 
     def _apex(netloc: str) -> str:
         """Return the company name that owns the domain.
@@ -852,19 +885,25 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
     def _parse_inline_date(s: str) -> str:
         m = _re.search(_DATE_PAT, s)
         if m:
-            try:
-                return _dt.datetime.strptime(m.group(1).replace(",", ""), "%b %d %Y").strftime("%Y-%m-%d")
-            except ValueError:
-                pass
+            raw = m.group(1).replace(",", "")
+            for fmt in ("%b %d %Y", "%B %d %Y"):
+                try:
+                    return _dt.datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+                except ValueError:
+                    pass
         return ""
 
     try:
+        parsed_origin = _urlparse(page_url)
+        origin = f"{parsed_origin.scheme}://{parsed_origin.netloc}"
         req = _Req(page_url, headers={
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                           "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "identity",
+            "Referer": origin + "/",   # fixes 400 on sites like ai.meta.com
+            "Origin": origin,
         })
         with _open(req, timeout=15) as resp:
             html = resp.read().decode("utf-8", errors="replace")
@@ -874,27 +913,58 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
     if len(html) < 500:
         return []
 
-    parsed_base = _urlparse(page_url)
+    parsed_base = parsed_origin  # already computed above
     base_domain = parsed_base.netloc.lower().replace("www.", "")
     base_apex   = _apex(parsed_base.netloc)
 
-    # Strategy 2: build position-indexed map of <time datetime="..."> dates
-    _time_positions: List[tuple] = []
-    for tm in _re.finditer(r'<time[^>]+datetime="([^"]*)"', html, _re.I):
-        raw_dt = tm.group(1).strip()
-        d = ""
+    def _resolve_raw_date(raw_dt: str) -> str:
+        """Parse a raw date string from a datetime attribute or data-* field."""
+        raw_dt = raw_dt.strip()
+        # ISO date prefix (handles 2026-11-08, 2026-11-08T..., 2026-11-08 ...)
         iso_m = _re.match(r"(20\d{2}-\d{2}-\d{2})", raw_dt)
         if iso_m:
-            d = iso_m.group(1)
-        else:
-            for fmt in ("%B %Y", "%b %Y"):
-                try:
-                    d = _dt.datetime.strptime(raw_dt[:16], fmt).strftime("%Y-%m-01")
-                    break
-                except ValueError:
-                    pass
+            return iso_m.group(1)
+        # Unix timestamp (ms or s)
+        ts_m = _re.match(r"^(\d{10,13})$", raw_dt)
+        if ts_m:
+            try:
+                ts = int(ts_m.group(1))
+                if ts > 1e11:   # milliseconds
+                    ts //= 1000
+                return _dt.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+            except (ValueError, OSError):
+                pass
+        # Named month formats and year/month-only variants
+        for fmt, day_suffix in (
+            ("%B %d, %Y", ""),  ("%B %d %Y", ""),
+            ("%b %d, %Y",  ""),  ("%b %d %Y",  ""),
+            ("%d %B %Y",   ""),  ("%d %b %Y",  ""),
+            ("%B %Y",      "-01"), ("%b %Y",    "-01"),
+            ("%Y/%m/%d",   ""),
+        ):
+            try:
+                parsed = _dt.datetime.strptime(raw_dt[:32], fmt)
+                return parsed.strftime("%Y-%m-%d") + day_suffix if not day_suffix else parsed.strftime("%Y-%m") + day_suffix
+            except ValueError:
+                pass
+        return ""
+
+    # Strategy 2a: position-indexed map of <time datetime="..."> dates
+    _time_positions: List[tuple] = []
+    for tm in _re.finditer(r'<time\b[^>]*\bdatetime="([^"]*)"', html, _re.I):
+        d = _resolve_raw_date(tm.group(1))
         if d:
             _time_positions.append((tm.start(), d))
+
+    # Strategy 2b: data-date / data-published / data-timestamp attributes
+    # (React/Vue components, Gatsby, Next.js, Ghost, etc. emit these in SSR HTML)
+    for dm in _re.finditer(
+        r'\bdata-(?:date|publish(?:ed)?(?:-date)?|created(?:-at)?|timestamp)="([^"]*)"',
+        html, _re.I
+    ):
+        d = _resolve_raw_date(dm.group(1))
+        if d:
+            _time_positions.append((dm.start(), d))
 
     def _nearest_time_date(pos: int, radius: int = 2000) -> str:
         best, best_dist = "", radius + 1
@@ -904,9 +974,49 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
                 best_dist, best = dist, td
         return best if best_dist <= radius else ""
 
-    link_re = _re.compile(r'<a\b([^>]*?)>(.*?)</a>', _re.I | _re.S)
+    # Strategy 0: JSON-LD structured data.
+    # Present in the initial HTML of Next.js / Ghost / WordPress / Gatsby sites
+    # even before JavaScript executes, so urlopen can read it.
+    import json as _json
     items: List[Dict] = []
     seen_urls: set = set()
+
+    for script_m in _re.finditer(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        html, _re.I | _re.S
+    ):
+        try:
+            data = _json.loads(script_m.group(1))
+            nodes = (data.get("@graph", [data]) if isinstance(data, dict) else
+                     data if isinstance(data, list) else [])
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                ntype = node.get("@type", "")
+                if isinstance(ntype, list):
+                    ntype = " ".join(ntype)
+                if not any(t in ntype for t in
+                           ("BlogPosting", "Article", "NewsArticle", "TechArticle")):
+                    continue
+                mep = node.get("mainEntityOfPage", "")
+                url_ = (node.get("url") or
+                        (mep.get("@id") if isinstance(mep, dict) else mep) or "")
+                title_ = (node.get("headline") or node.get("name") or "").strip()
+                date_raw = (node.get("datePublished") or node.get("dateModified")
+                            or node.get("dateCreated") or "")
+                if not url_ or not title_ or len(title_) < 8:
+                    continue
+                url_key = url_.lower().rstrip("/")
+                if url_key in seen_urls:
+                    continue
+                seen_urls.add(url_key)
+                items.append({"title": title_, "url": url_, "source": label,
+                              "published_at": _resolve_raw_date(str(date_raw)),
+                              "summary": ""})
+        except Exception:
+            pass
+
+    link_re = _re.compile(r'<a\b([^>]*?)>(.*?)</a>', _re.I | _re.S)
 
     for match in link_re.finditer(html):
         attrs_str  = match.group(1)
@@ -1014,6 +1124,8 @@ def custom_sources_node(state: NewsCollectionState) -> NewsCollectionState:
     """User-provided custom sources (RSS feed URLs or HTML pages).
 
     Strategy per URL:
+    0. feedparser with _KNOWN_FEEDS lookup + auto-discovery (mirrors rss_feeds_node).
+       Handles all official RSS/Atom feeds — NVIDIA, HuggingFace, Cloudflare, AWS, etc.
     1. Try RSS/Atom via cmbagent's _fetch_rss_items (date-filtered).
     2. Try cmbagent's _direct_scrape_page_links (requires article-path signals).
     3. Fall back to _scrape_page_permissive which accepts any same-domain link
@@ -1030,6 +1142,59 @@ def custom_sources_node(state: NewsCollectionState) -> NewsCollectionState:
     seen = list(state["seen_keys"])
     errors = list(state["errors"])
 
+    _date_from  = _parse_date(state["date_from"])
+    _date_to_dt = _parse_date(state["date_to"])
+    _date_to_eod = _date_to_dt.replace(hour=23, minute=59, second=59) if _date_to_dt else None
+
+    try:
+        import feedparser as _feedparser
+        _fp_ok = True
+    except ImportError:
+        _fp_ok = False
+
+    def _try_feedparser(url: str, source_label: str) -> List[Dict]:
+        """feedparser with _KNOWN_FEEDS lookup + common-suffix auto-discovery + date filter."""
+        if not _fp_ok:
+            return []
+        resolved = (_KNOWN_FEEDS.get(url.rstrip("/") + "/")
+                    or _KNOWN_FEEDS.get(url.rstrip("/"))
+                    or url)
+        f = _feedparser.parse(resolved)
+        if not f.entries:
+            for suffix in ("/feed/", "/feed.xml", "/rss/", "/atom.xml"):
+                try:
+                    f2 = _feedparser.parse(url.rstrip("/") + suffix)
+                    if f2.entries:
+                        f = f2
+                        break
+                except Exception:
+                    pass
+        items: List[Dict] = []
+        feed_title = f.feed.get("title") or source_label
+        for entry in f.entries:
+            pub_dt: Optional[datetime] = None
+            pub_str = ""
+            if entry.get("published_parsed"):
+                pub_dt = _parse_struct_time(entry.published_parsed)
+                pub_str = pub_dt.strftime("%Y-%m-%d") if pub_dt else ""
+            elif entry.get("updated_parsed"):
+                pub_dt = _parse_struct_time(entry.updated_parsed)
+                pub_str = pub_dt.strftime("%Y-%m-%d") if pub_dt else ""
+            else:
+                raw = entry.get("published") or entry.get("updated") or ""
+                pub_dt = _parse_date(raw)
+                pub_str = raw[:10] if raw else ""
+            if pub_dt and _date_from and _date_to_eod:
+                if not (_date_from <= pub_dt <= _date_to_eod):
+                    continue
+            title = (entry.get("title") or "").strip()
+            entry_url = (entry.get("link") or "").strip()
+            summary = _strip_html(entry.get("summary") or "")[:500]
+            if title and entry_url:
+                items.append({"title": title, "url": entry_url, "summary": summary,
+                              "source": feed_title, "published_at": pub_str})
+        return items
+
     if _news_tools is not None:
         _fetch_rss = getattr(_news_tools, "_fetch_rss_items", None)
         _scrape    = getattr(_news_tools, "_direct_scrape_page_links", None)
@@ -1042,7 +1207,18 @@ def custom_sources_node(state: NewsCollectionState) -> NewsCollectionState:
             continue
         label = (urlparse(url).netloc or "custom").replace("www.", "")[:30]
 
-        # 1. RSS
+        # 0. feedparser (mirrors rss_feeds_node — covers all official RSS/Atom feeds)
+        try:
+            fp_items = _try_feedparser(url, label)
+            if fp_items:
+                before = len(collected)
+                collected, seen = _merge_items(fp_items, collected, seen)
+                print(f"[Collection] Custom/{label} (feedparser): {len(collected) - before} items")
+                continue
+        except Exception:
+            pass
+
+        # 1. RSS via cmbagent
         if _fetch_rss is not None:
             try:
                 rss_items = _fetch_rss(url, label, state["date_from"], state["date_to"])

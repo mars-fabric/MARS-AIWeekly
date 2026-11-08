@@ -438,6 +438,37 @@ def _compact_curated_for_review(curated_md: str) -> str:
     return "\n".join(result)
 
 
+def _medium_compact(curated_md: str) -> str:
+    """Medium compression: keep title line + first 120 chars of summary per item.
+
+    Used when full compact exceeds model context. The analyst/critic still sees
+    enough context to group and assess every item — no items are dropped.
+    The report itself is always written from the full curated data via the
+    chunked writer, so report content (titles + full descriptions) is unaffected.
+    Reduces size ~3-4x vs _compact_curated_for_review.
+    """
+    lines = curated_md.splitlines()
+    result: list[str] = []
+    in_item = False
+    summary_chars = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            in_item = False
+            summary_chars = 0
+            continue
+        if stripped.startswith("- **") or stripped.startswith("* **"):
+            result.append(line)
+            in_item = True
+            summary_chars = 0
+        elif in_item and not stripped.startswith("Source"):
+            # Keep first ~120 chars of summary content
+            if summary_chars < 120:
+                result.append(line)
+                summary_chars += len(stripped)
+    return "\n".join(result)
+
+
 # ─── Result extraction ──────────────────────────────────────────────────
 
 # ─── Chunked curation merge/dedup ────────────────────────────────────────
@@ -891,24 +922,8 @@ def build_generation_analysis_kwargs(
 
     task_tokens = count_tokens(task, model)
     if task_tokens > input_budget:
-        # Fit curated items to budget
-        prompt_without_curated = generation_analyst_prompt.format(
-            date_from=date_from,
-            date_to=date_to,
-            style=style,
-            topics=", ".join(topics) if topics else "AI, ML",
-            curated_items="",
-        )
-        overhead_tokens = count_tokens(prompt_without_curated, model)
-        curated_budget = input_budget - overhead_tokens - 500
-        compact_curated, was_truncated = fit_content_to_context(
-            compact_curated, model, reserved_tokens=(max_ctx - curated_budget),
-        )
-        if was_truncated:
-            logger.warning(
-                "Stage 3 analyst: curated_items truncated to fit context (%d tokens over budget)",
-                task_tokens - input_budget,
-            )
+        # Level 2: try titles-only (5-10x smaller) before dropping items
+        compact_curated = _medium_compact(curated_items)
         task = generation_analyst_prompt.format(
             date_from=date_from,
             date_to=date_to,
@@ -916,6 +931,31 @@ def build_generation_analysis_kwargs(
             topics=", ".join(topics) if topics else "AI, ML",
             curated_items=compact_curated,
         )
+        task_tokens = count_tokens(task, model)
+        if task_tokens > input_budget:
+            # Last resort: truncate (extremely unlikely with titles-only)
+            prompt_without_curated = generation_analyst_prompt.format(
+                date_from=date_from,
+                date_to=date_to,
+                style=style,
+                topics=", ".join(topics) if topics else "AI, ML",
+                curated_items="",
+            )
+            overhead_tokens = count_tokens(prompt_without_curated, model)
+            curated_budget = input_budget - overhead_tokens - 500
+            compact_curated, _ = fit_content_to_context(
+                compact_curated, model, reserved_tokens=(max_ctx - curated_budget),
+            )
+            logger.warning("Stage 3 analyst: fell back to truncation after titles-only still exceeded context")
+            task = generation_analyst_prompt.format(
+                date_from=date_from,
+                date_to=date_to,
+                style=style,
+                topics=", ".join(topics) if topics else "AI, ML",
+                curated_items=compact_curated,
+            )
+        else:
+            logger.info("Stage 3 analyst: switched to titles-only compact to fit all items in context")
 
     return dict(
         task=task,
@@ -1074,25 +1114,8 @@ def build_review_critique_kwargs(
 
     task_tokens = count_tokens(task, model)
     if task_tokens > input_budget:
-        # Curated items are the largest part — fit them to remaining budget
-        prompt_without_curated = review_critic_prompt.format(
-            date_from=date_from,
-            date_to=date_to,
-            style=style,
-            word_rule=word_rule,
-            draft_report=draft_report,
-            curated_items="",
-        )
-        overhead_tokens = count_tokens(prompt_without_curated, model)
-        curated_budget = input_budget - overhead_tokens - 500
-        compact_curated, was_truncated = fit_content_to_context(
-            compact_curated, model, reserved_tokens=(max_ctx - curated_budget),
-        )
-        if was_truncated:
-            logger.warning(
-                "Stage 4 critic: curated_items truncated to fit context (%d→%d tokens)",
-                task_tokens, count_tokens(compact_curated, model) + overhead_tokens,
-            )
+        # Level 2: titles-only (draft_report already takes significant space)
+        compact_curated = _medium_compact(curated_items)
         task = review_critic_prompt.format(
             date_from=date_from,
             date_to=date_to,
@@ -1101,6 +1124,33 @@ def build_review_critique_kwargs(
             draft_report=draft_report,
             curated_items=compact_curated,
         )
+        task_tokens = count_tokens(task, model)
+        if task_tokens > input_budget:
+            # Last resort: truncate titles-only (extremely unlikely)
+            prompt_without_curated = review_critic_prompt.format(
+                date_from=date_from,
+                date_to=date_to,
+                style=style,
+                word_rule=word_rule,
+                draft_report=draft_report,
+                curated_items="",
+            )
+            overhead_tokens = count_tokens(prompt_without_curated, model)
+            curated_budget = input_budget - overhead_tokens - 500
+            compact_curated, _ = fit_content_to_context(
+                compact_curated, model, reserved_tokens=(max_ctx - curated_budget),
+            )
+            logger.warning("Stage 4 critic: fell back to truncation after titles-only still exceeded context")
+            task = review_critic_prompt.format(
+                date_from=date_from,
+                date_to=date_to,
+                style=style,
+                word_rule=word_rule,
+                draft_report=draft_report,
+                curated_items=compact_curated,
+            )
+        else:
+            logger.info("Stage 4 critic: switched to titles-only compact to fit all items alongside draft report")
 
     return dict(
         task=task,

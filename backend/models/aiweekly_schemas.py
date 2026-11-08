@@ -7,8 +7,8 @@ from pydantic import BaseModel
 class AIWeeklyCreateRequest(BaseModel):
     topics: List[str] = ["llm", "cv", "rl", "robotics", "quantum", "ml-open-ai", "ai"]
     sources: List[str] = [
-        "github", "press-releases", "company-announcements",
-        "major-releases", "curated-ai-websites",
+        "official-websites", "github", "press-releases",
+        "company-announcements", "major-releases", "curated-ai-websites",
     ]
     custom_sources: Optional[List[str]] = None
     date_from: str
