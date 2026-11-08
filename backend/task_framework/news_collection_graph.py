@@ -170,6 +170,16 @@ _ARXIV_EXPANSION: Dict[str, str] = {
     "diffusion":  "diffusion model image generation synthesis",
 }
 
+# Chrome User-Agent used for all feedparser requests.
+# The default python-feedparser/X.X.X UA is blocked by NVIDIA, AWS, Azure,
+# HuggingFace, and Microsoft — only Google/OpenAI feeds accept it.
+_CHROME_UA = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+}
+
 # Topic coverage thresholds
 MIN_COVERAGE_PER_TOPIC = 5    # items per topic before gap-fill triggers
 MAX_GAP_FILL_ROUNDS = 2       # maximum gap-fill iterations
@@ -726,13 +736,13 @@ def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
     def _try_feed(url: str):
         """Resolve blog URL to its RSS feed. Checks known map first, then auto-discovers."""
         resolved = _KNOWN_FEEDS.get(url.rstrip("/") + "/") or _KNOWN_FEEDS.get(url.rstrip("/")) or url
-        f = feedparser.parse(resolved)
+        f = feedparser.parse(resolved, request_headers=_CHROME_UA)
         if f.entries:
             return f
         # Auto-discovery fallback for unmapped URLs
         for suffix in ("/feed/", "/feed.xml", "/rss/", "/atom/"):
             candidate = url.rstrip("/") + suffix
-            f2 = feedparser.parse(candidate)
+            f2 = feedparser.parse(candidate, request_headers=_CHROME_UA)
             if f2.entries:
                 return f2
         return f
@@ -1159,11 +1169,11 @@ def custom_sources_node(state: NewsCollectionState) -> NewsCollectionState:
         resolved = (_KNOWN_FEEDS.get(url.rstrip("/") + "/")
                     or _KNOWN_FEEDS.get(url.rstrip("/"))
                     or url)
-        f = _feedparser.parse(resolved)
+        f = _feedparser.parse(resolved, request_headers=_CHROME_UA)
         if not f.entries:
             for suffix in ("/feed/", "/feed.xml", "/rss/", "/atom.xml"):
                 try:
-                    f2 = _feedparser.parse(url.rstrip("/") + suffix)
+                    f2 = _feedparser.parse(url.rstrip("/") + suffix, request_headers=_CHROME_UA)
                     if f2.entries:
                         f = f2
                         break
