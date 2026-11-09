@@ -47,82 +47,57 @@ logger = logging.getLogger(__name__)
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-# Single source of truth for all tracked AI companies.
-# slug    — internal key used as company identifier throughout the pipeline
-# name    — display name used to generate DuckDuckGo search queries
-# product — primary product/focus (makes search queries more precise)
-# github  — official repos monitored for release notes
-_COMPANY_CONFIGS: Dict[str, Dict] = {
-    "openai":      {"name": "OpenAI",       "product": "GPT LLM",           "github": ["openai/openai-python"]},
-    "anthropic":   {"name": "Anthropic",    "product": "Claude LLM",         "github": ["anthropics/anthropic-sdk-python"]},
-    "google":      {"name": "Google",       "product": "Gemini multimodal",  "github": []},
-    "meta":        {"name": "Meta",         "product": "Llama open-source",  "github": []},
-    "microsoft":   {"name": "Microsoft",    "product": "Copilot SLM",        "github": ["microsoft/autogen", "microsoft/semantic-kernel"]},
-    "nvidia":      {"name": "NVIDIA",       "product": "GPU accelerator",    "github": []},
-    "huggingface": {"name": "Hugging Face", "product": "ML open-source",     "github": ["huggingface/transformers", "huggingface/diffusers"]},
-    "amazon":      {"name": "Amazon",       "product": "Bedrock foundation", "github": []},
-    "deepmind":    {"name": "DeepMind",     "product": "AlphaFold research", "github": ["google-deepmind/gemma"]},
-    "apple":       {"name": "Apple",        "product": "on-device ML",       "github": []},
-    "ibm":         {"name": "IBM",          "product": "watsonx enterprise", "github": []},
-    "mistral":     {"name": "Mistral",      "product": "open-source LLM",   "github": ["mistralai/mistral-common"]},
-    "xai":         {"name": "xAI",          "product": "Grok LLM",           "github": []},
-    "deepseek":    {"name": "DeepSeek",     "product": "reasoning LLM",      "github": []},
-    "cohere":      {"name": "Cohere",       "product": "enterprise NLP RAG", "github": []},
-    "perplexity":  {"name": "Perplexity",   "product": "search",             "github": []},
-}
-
-# AI ecosystem repos not owned by a single company above.
-_ECOSYSTEM_REPOS: List[str] = [
-    "langchain-ai/langchain",
-    "vllm-project/vllm",
-    "ollama/ollama",
+# Fixed set of core AI companies always scraped via cmbagent (Tier 1).
+# Kept small and stable — these are the companies whose blogs reliably publish
+# AI news worth including regardless of topic.
+_CORE_AI_COMPANIES: List[str] = [
+    "openai", "anthropic", "google", "meta", "microsoft",
+    "nvidia", "huggingface", "amazon", "deepmind", "apple",
+    "ibm", "mistral", "xai", "deepseek", "cohere", "perplexity",
 ]
-
-# All derived from _COMPANY_CONFIGS — do not edit separately.
-_CORE_AI_COMPANIES: List[str] = list(_COMPANY_CONFIGS)
-_COMPANY_DDG_QUERIES: Dict[str, str] = {
-    slug: f"{cfg['name']} {cfg['product']} AI announcement"
-    for slug, cfg in _COMPANY_CONFIGS.items()
-}
 
 # Global AI news RSS feeds — official company and research sources only.
 # Third-party news aggregators (TechCrunch, VentureBeat, The Verge, etc.) are
 # intentionally excluded so all items link back to primary/official sources.
 _GLOBAL_RSS_FEEDS: List[str] = [
     # AI research, news, and engineering sources
-    "https://openai.com/news/rss.xml",
-    "https://www.anthropic.com/news",
-    "https://www.anthropic.com/research",
+"https://openai.com/news/",
+"https://openai.com/research/",
+"https://www.anthropic.com/news",
+"https://www.anthropic.com/research",
 
-    "https://blog.google/",
-    "https://blog.google/technology/ai/",
-    "https://blog.google/innovation-and-ai/",
-    "https://blog.google/innovation-and-ai/technology/ai/",
-    "https://blog.google/innovation-and-ai/technology/research/",
-    "https://research.google/blog/",
-    "https://deepmind.google/blog/",
+"https://blog.google/",
+"https://blog.google/technology/ai/",
+"https://blog.google/innovation-and-ai/",
+"https://blog.google/innovation-and-ai/technology/ai/",
+"https://blog.google/innovation-and-ai/technology/research/",
+"https://research.google/blog/",
+"https://deepmind.google/blog/",
 
-    "https://blogs.microsoft.com/",
-    "https://blogs.microsoft.com/ai/",
-    "https://microsoft.ai/",
-    "https://microsoft.ai/blog/",
-    "https://www.microsoft.com/en-us/research/blog/",
-    "https://azure.microsoft.com/en-us/blog/",
-    "https://azure.microsoft.com/en-us/blog/content-type/announcements/",
+"https://blogs.microsoft.com/",
+"https://blogs.microsoft.com/ai/",
+"https://microsoft.ai/",
+"https://microsoft.ai/blog/",
+"https://www.microsoft.com/en-us/research/blog/",
+"https://azure.microsoft.com/en-us/blog/",
+"https://azure.microsoft.com/en-us/blog/content-type/announcements/",
 
-    "https://engineering.fb.com/",
+"https://ai.meta.com/blog/",
+"https://ai.meta.com/research/",
 
-    "https://aws.amazon.com/blogs/aws/",
-    "https://aws.amazon.com/blogs/machine-learning/",
+"https://aws.amazon.com/blogs/aws/",
+"https://aws.amazon.com/blogs/machine-learning/",
 
-    "https://blogs.nvidia.com/blog/tag/artificial-intelligence/",
-    "https://blogs.nvidia.com/blog/tag/agentic-ai/",
-    "https://blogs.nvidia.com/blog/tag/inference/",
-    "https://developer.nvidia.com/blog/",
+"https://blogs.nvidia.com/blog/category/ai/",
+"https://blogs.nvidia.com/blog/tag/agentic-ai/",
+"https://blogs.nvidia.com/blog/tag/inference/",
+"https://developer.nvidia.com/blog/",
 
-    "https://huggingface.co/blog/feed.xml",
+"https://huggingface.co/blog",
 
-    "https://cohere.com/blog",
+"https://cohere.com/blog",
+
+"https://www.perplexity.ai/hub/blog",
 ]
 
 # Add companies not in cmbagent's _OFFICIAL_NEWS_PAGES, and fix Anthropic's
@@ -135,50 +110,20 @@ if _news_tools is not None:
     })
     _news_tools._COMPANY_RSS_FEEDS["anthropic"] = []
 
+# Major AI repos monitored for release notes via the GitHub public API.
 _GITHUB_AI_REPOS: List[str] = [
-    repo for cfg in _COMPANY_CONFIGS.values() for repo in cfg["github"]
-] + _ECOSYSTEM_REPOS
-
-# Blog page → actual RSS feed URL for pages that don't auto-discover well.
-# Used by rss_feeds_node._try_feed(); defined here to avoid rebuilding on every call.
-_KNOWN_FEEDS: Dict[str, str] = {
-    "https://aws.amazon.com/blogs/aws/":                         "https://aws.amazon.com/blogs/aws/feed/",
-    "https://aws.amazon.com/blogs/machine-learning/":            "https://aws.amazon.com/blogs/machine-learning/feed/",
-    "https://blogs.nvidia.com/blog/tag/artificial-intelligence/": "https://blogs.nvidia.com/feed/",
-    "https://blogs.nvidia.com/blog/tag/agentic-ai/":             "https://blogs.nvidia.com/blog/tag/agentic-ai/feed/",
-    "https://blogs.nvidia.com/blog/tag/inference/":              "https://blogs.nvidia.com/blog/tag/inference/feed/",
-    "https://developer.nvidia.com/blog/":                        "https://developer.nvidia.com/blog/feed/",
-    "https://azure.microsoft.com/en-us/blog/":                   "https://azure.microsoft.com/en-us/blog/feed/",
-    # blog.cloudflare.com/rss/ times out; HTML scraping works fine — no mapping needed
-    "https://huggingface.co/blog":                               "https://huggingface.co/blog/feed.xml",
-    # blogs.microsoft.com/ai/feed/ is 410 Gone — omitted
-}
-
-# Short topic alias → expanded arXiv search query.
-# Used by _topic_to_arxiv_query(); defined here to avoid rebuilding on every call.
-_ARXIV_EXPANSION: Dict[str, str] = {
-    "llm":        "large language model transformer generation",
-    "cv":         "computer vision image recognition object detection",
-    "rl":         "reinforcement learning reward policy gradient",
-    "robotics":   "robotics manipulation locomotion autonomous",
-    "quantum":    "quantum computing machine learning",
-    "ai":         "artificial intelligence deep learning neural network",
-    "ml":         "machine learning optimization generalization",
-    "nlp":        "natural language processing text generation",
-    "multimodal": "multimodal vision language foundation model",
-    "agents":     "autonomous agent tool use reasoning LLM",
-    "diffusion":  "diffusion model image generation synthesis",
-}
-
-# Chrome User-Agent used for all feedparser requests.
-# The default python-feedparser/X.X.X UA is blocked by NVIDIA, AWS, Azure,
-# HuggingFace, and Microsoft — only Google/OpenAI feeds accept it.
-_CHROME_UA = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    )
-}
+    "openai/openai-python",
+    "anthropics/anthropic-sdk-python",
+    "huggingface/transformers",
+    "huggingface/diffusers",
+    "langchain-ai/langchain",
+    "microsoft/autogen",
+    "microsoft/semantic-kernel",
+    "mistralai/mistral-inference",
+    "vllm-project/vllm",
+    "ollama/ollama",
+    "google-deepmind/gemma",
+]
 
 # Topic coverage thresholds
 MIN_COVERAGE_PER_TOPIC = 5    # items per topic before gap-fill triggers
@@ -214,36 +159,25 @@ def _strip_html(text: str) -> str:
 
 
 def _parse_date(date_str: str) -> Optional[datetime]:
-    """Parse a date string in ISO, RFC 2822, and common formats across sites."""
+    """Parse a date string in ISO, RFC 2822, and common formats."""
     if not date_str:
         return None
     s = str(date_str).strip()
-    # Strip trailing timezone abbreviations strptime can't handle (UTC, GMT, PST…)
-    s_no_tz = re.sub(r'\s+[A-Z]{2,5}$', '', s).strip()
-    for candidate in (s, s_no_tz):
-        for fmt in (
-            "%Y-%m-%dT%H:%M:%SZ",
-            "%Y-%m-%dT%H:%M:%S%z",         # ISO with offset (+00:00)
-            "%Y-%m-%dT%H:%M:%S",
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%d",
-            "%Y/%m/%d",                     # 2026/11/08
-            "%d %b %Y",                     # 08 Nov 2026
-            "%d %B %Y",                     # 08 November 2026
-            "%b %d, %Y",                    # Nov 08, 2026
-            "%b %d %Y",                     # Nov 08 2026
-            "%B %d, %Y",                    # November 08, 2026
-            "%B %d %Y",                     # November 08 2026
-            "%a, %d %b %Y %H:%M:%S %z",
-            "%a, %d %b %Y %H:%M:%S %Z",
-            "%d %b %Y %H:%M:%S %z",
-            "%m/%d/%Y",                     # 11/08/2026 (US)
-            "%d/%m/%Y",                     # 08/11/2026 (EU)
-        ):
-            try:
-                return datetime.strptime(candidate[:32], fmt).replace(tzinfo=None)
-            except (ValueError, IndexError):
-                continue
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+        "%d %b %Y",
+        "%B %d, %Y",
+        "%a, %d %b %Y %H:%M:%S %z",
+        "%a, %d %b %Y %H:%M:%S %Z",
+        "%d %b %Y %H:%M:%S %z",
+    ):
+        try:
+            return datetime.strptime(s[:31], fmt).replace(tzinfo=None)
+        except (ValueError, IndexError):
+            continue
     return None
 
 
@@ -310,6 +244,20 @@ def _topic_to_arxiv_query(topic: str) -> str:
     so the graph works for any user-provided input.
     """
     q = topic.lower().replace("-", " ").replace("_", " ").strip()
+    # Short-form aliases → expanded arXiv-friendly queries
+    _ARXIV_EXPANSION: Dict[str, str] = {
+        "llm": "large language model transformer generation",
+        "cv": "computer vision image recognition object detection",
+        "rl": "reinforcement learning reward policy gradient",
+        "robotics": "robotics manipulation locomotion autonomous",
+        "quantum": "quantum computing quantum machine learning",
+        "ai": "artificial intelligence deep learning neural network",
+        "ml": "machine learning optimization generalization",
+        "nlp": "natural language processing text generation",
+        "multimodal": "multimodal vision language foundation model",
+        "agents": "autonomous agent tool use reasoning LLM",
+        "diffusion": "diffusion model image generation synthesis",
+    }
     return _ARXIV_EXPANSION.get(q, f"{q} deep learning")
 
 
@@ -538,6 +486,27 @@ def company_scrape_node(state: NewsCollectionState) -> NewsCollectionState:
     return {**state, "collected_items": collected, "seen_keys": seen, "errors": errors}
 
 
+# Company name → natural search query (avoids ambiguous single-word searches)
+_COMPANY_DDG_QUERIES: Dict[str, str] = {
+    "openai":       "OpenAI GPT announcement",
+    "anthropic":    "Anthropic Claude AI announcement",
+    "google":       "Google AI Gemini announcement",
+    "meta":         "Meta AI Llama announcement",
+    "microsoft":    "Microsoft AI Copilot Azure announcement",
+    "nvidia":       "NVIDIA AI GPU announcement",
+    "huggingface":  "Hugging Face AI model release",
+    "amazon":       "Amazon AWS AI Bedrock announcement",
+    "deepmind":     "Google DeepMind AI research",
+    "apple":        "Apple AI machine learning announcement",
+    "ibm":          "IBM AI watsonx announcement",
+    "mistral":      "Mistral AI model release",
+    "xai":          "xAI Grok announcement",
+    "deepseek":     "DeepSeek AI model release",
+    "cohere":       "Cohere AI enterprise announcement",
+    "perplexity":   "Perplexity AI search announcement",
+}
+
+
 def company_ddg_news_node(state: NewsCollectionState) -> NewsCollectionState:
     """DuckDuckGo news search for each core AI company — no API key required.
 
@@ -718,8 +687,6 @@ def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
     """Parse global AI RSS feeds via feedparser (date-filtered, no topic constraint).
 
     Always runs — hardcoded feeds are independent of source checkbox selection.
-    When 'official-websites' is in sources, also processes every URL from
-    cmbagent's _OFFICIAL_NEWS_PAGES and _COMPANY_RSS_FEEDS (deduplicated).
     """
     try:
         import feedparser
@@ -733,36 +700,32 @@ def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
     date_to_dt = _parse_date(state["date_to"])
     date_to_eod = date_to_dt.replace(hour=23, minute=59, second=59) if date_to_dt else None
 
+    # Known RSS feed URLs for blog pages that don't auto-discover well
+    _KNOWN_FEEDS = {
+        "https://huggingface.co/blog":                        "https://huggingface.co/blog/feed.xml",
+        "https://aws.amazon.com/blogs/aws/":                  "https://aws.amazon.com/blogs/aws/feed/",
+        "https://aws.amazon.com/blogs/machine-learning/":     "https://aws.amazon.com/blogs/machine-learning/feed/",
+        "https://blogs.nvidia.com/blog/category/ai/":         "https://blogs.nvidia.com/feed/",
+        "https://blogs.nvidia.com/blog/tag/agentic-ai/":      "https://blogs.nvidia.com/blog/tag/agentic-ai/feed/",
+        "https://blogs.nvidia.com/blog/tag/inference/":       "https://blogs.nvidia.com/blog/tag/inference/feed/",
+        "https://developer.nvidia.com/blog/":                 "https://developer.nvidia.com/blog/feed/",
+    }
+
     def _try_feed(url: str):
         """Resolve blog URL to its RSS feed. Checks known map first, then auto-discovers."""
         resolved = _KNOWN_FEEDS.get(url.rstrip("/") + "/") or _KNOWN_FEEDS.get(url.rstrip("/")) or url
-        f = feedparser.parse(resolved, request_headers=_CHROME_UA)
+        f = feedparser.parse(resolved)
         if f.entries:
             return f
         # Auto-discovery fallback for unmapped URLs
         for suffix in ("/feed/", "/feed.xml", "/rss/", "/atom/"):
             candidate = url.rstrip("/") + suffix
-            f2 = feedparser.parse(candidate, request_headers=_CHROME_UA)
+            f2 = feedparser.parse(candidate)
             if f2.entries:
                 return f2
         return f
 
-    # Build the feed URL list: always include hardcoded feeds; optionally add
-    # all cmbagent official pages + RSS feeds when 'official-websites' selected.
-    feed_urls_to_process = list(_GLOBAL_RSS_FEEDS)
-    if "official-websites" in (state.get("sources") or []) and _news_tools is not None:
-        cmbagent_urls: set = set()
-        for urls in getattr(_news_tools, "_OFFICIAL_NEWS_PAGES", {}).values():
-            cmbagent_urls.update(u for u in (urls or []) if u)
-        for urls in getattr(_news_tools, "_COMPANY_RSS_FEEDS", {}).values():
-            cmbagent_urls.update(u for u in (urls or []) if u)
-        already = set(_GLOBAL_RSS_FEEDS)
-        extras = sorted(u for u in cmbagent_urls if u.startswith("http") and u not in already)
-        if extras:
-            print(f"[Collection] Official Websites: adding {len(extras)} cmbagent URLs")
-            feed_urls_to_process.extend(extras)
-
-    for feed_url in feed_urls_to_process:
+    for feed_url in _GLOBAL_RSS_FEEDS:
         try:
             feed = _try_feed(feed_url)
             source_label = feed.feed.get("title") or feed_url.split("/")[2]
@@ -870,8 +833,7 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
         # Generic single-word/short category labels
         "science", "technology", "robotics", "infrastructure",
     }
-    # Matches both abbreviated ("Nov 8, 2026") and full ("November 8, 2026") month names
-    _DATE_PAT = r"([A-Za-z]{3,9}\s+\d{1,2},?\s+20\d{2})"
+    _DATE_PAT = r"([A-Za-z]{3}\s+\d{1,2},?\s+20\d{2})"
 
     def _apex(netloc: str) -> str:
         """Return the company name that owns the domain.
@@ -895,25 +857,19 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
     def _parse_inline_date(s: str) -> str:
         m = _re.search(_DATE_PAT, s)
         if m:
-            raw = m.group(1).replace(",", "")
-            for fmt in ("%b %d %Y", "%B %d %Y"):
-                try:
-                    return _dt.datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
-                except ValueError:
-                    pass
+            try:
+                return _dt.datetime.strptime(m.group(1).replace(",", ""), "%b %d %Y").strftime("%Y-%m-%d")
+            except ValueError:
+                pass
         return ""
 
     try:
-        parsed_origin = _urlparse(page_url)
-        origin = f"{parsed_origin.scheme}://{parsed_origin.netloc}"
         req = _Req(page_url, headers={
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                           "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "identity",
-            "Referer": origin + "/",   # fixes 400 on sites like ai.meta.com
-            "Origin": origin,
         })
         with _open(req, timeout=15) as resp:
             html = resp.read().decode("utf-8", errors="replace")
@@ -923,58 +879,27 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
     if len(html) < 500:
         return []
 
-    parsed_base = parsed_origin  # already computed above
+    parsed_base = _urlparse(page_url)
     base_domain = parsed_base.netloc.lower().replace("www.", "")
     base_apex   = _apex(parsed_base.netloc)
 
-    def _resolve_raw_date(raw_dt: str) -> str:
-        """Parse a raw date string from a datetime attribute or data-* field."""
-        raw_dt = raw_dt.strip()
-        # ISO date prefix (handles 2026-11-08, 2026-11-08T..., 2026-11-08 ...)
+    # Strategy 2: build position-indexed map of <time datetime="..."> dates
+    _time_positions: List[tuple] = []
+    for tm in _re.finditer(r'<time[^>]+datetime="([^"]*)"', html, _re.I):
+        raw_dt = tm.group(1).strip()
+        d = ""
         iso_m = _re.match(r"(20\d{2}-\d{2}-\d{2})", raw_dt)
         if iso_m:
-            return iso_m.group(1)
-        # Unix timestamp (ms or s)
-        ts_m = _re.match(r"^(\d{10,13})$", raw_dt)
-        if ts_m:
-            try:
-                ts = int(ts_m.group(1))
-                if ts > 1e11:   # milliseconds
-                    ts //= 1000
-                return _dt.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
-            except (ValueError, OSError):
-                pass
-        # Named month formats and year/month-only variants
-        for fmt, day_suffix in (
-            ("%B %d, %Y", ""),  ("%B %d %Y", ""),
-            ("%b %d, %Y",  ""),  ("%b %d %Y",  ""),
-            ("%d %B %Y",   ""),  ("%d %b %Y",  ""),
-            ("%B %Y",      "-01"), ("%b %Y",    "-01"),
-            ("%Y/%m/%d",   ""),
-        ):
-            try:
-                parsed = _dt.datetime.strptime(raw_dt[:32], fmt)
-                return parsed.strftime("%Y-%m-%d") + day_suffix if not day_suffix else parsed.strftime("%Y-%m") + day_suffix
-            except ValueError:
-                pass
-        return ""
-
-    # Strategy 2a: position-indexed map of <time datetime="..."> dates
-    _time_positions: List[tuple] = []
-    for tm in _re.finditer(r'<time\b[^>]*\bdatetime="([^"]*)"', html, _re.I):
-        d = _resolve_raw_date(tm.group(1))
+            d = iso_m.group(1)
+        else:
+            for fmt in ("%B %Y", "%b %Y"):
+                try:
+                    d = _dt.datetime.strptime(raw_dt[:16], fmt).strftime("%Y-%m-01")
+                    break
+                except ValueError:
+                    pass
         if d:
             _time_positions.append((tm.start(), d))
-
-    # Strategy 2b: data-date / data-published / data-timestamp attributes
-    # (React/Vue components, Gatsby, Next.js, Ghost, etc. emit these in SSR HTML)
-    for dm in _re.finditer(
-        r'\bdata-(?:date|publish(?:ed)?(?:-date)?|created(?:-at)?|timestamp)="([^"]*)"',
-        html, _re.I
-    ):
-        d = _resolve_raw_date(dm.group(1))
-        if d:
-            _time_positions.append((dm.start(), d))
 
     def _nearest_time_date(pos: int, radius: int = 2000) -> str:
         best, best_dist = "", radius + 1
@@ -984,49 +909,9 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
                 best_dist, best = dist, td
         return best if best_dist <= radius else ""
 
-    # Strategy 0: JSON-LD structured data.
-    # Present in the initial HTML of Next.js / Ghost / WordPress / Gatsby sites
-    # even before JavaScript executes, so urlopen can read it.
-    import json as _json
+    link_re = _re.compile(r'<a\b([^>]*?)>(.*?)</a>', _re.I | _re.S)
     items: List[Dict] = []
     seen_urls: set = set()
-
-    for script_m in _re.finditer(
-        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
-        html, _re.I | _re.S
-    ):
-        try:
-            data = _json.loads(script_m.group(1))
-            nodes = (data.get("@graph", [data]) if isinstance(data, dict) else
-                     data if isinstance(data, list) else [])
-            for node in nodes:
-                if not isinstance(node, dict):
-                    continue
-                ntype = node.get("@type", "")
-                if isinstance(ntype, list):
-                    ntype = " ".join(ntype)
-                if not any(t in ntype for t in
-                           ("BlogPosting", "Article", "NewsArticle", "TechArticle")):
-                    continue
-                mep = node.get("mainEntityOfPage", "")
-                url_ = (node.get("url") or
-                        (mep.get("@id") if isinstance(mep, dict) else mep) or "")
-                title_ = (node.get("headline") or node.get("name") or "").strip()
-                date_raw = (node.get("datePublished") or node.get("dateModified")
-                            or node.get("dateCreated") or "")
-                if not url_ or not title_ or len(title_) < 8:
-                    continue
-                url_key = url_.lower().rstrip("/")
-                if url_key in seen_urls:
-                    continue
-                seen_urls.add(url_key)
-                items.append({"title": title_, "url": url_, "source": label,
-                              "published_at": _resolve_raw_date(str(date_raw)),
-                              "summary": ""})
-        except Exception:
-            pass
-
-    link_re = _re.compile(r'<a\b([^>]*?)>(.*?)</a>', _re.I | _re.S)
 
     for match in link_re.finditer(html):
         attrs_str  = match.group(1)
@@ -1134,8 +1019,6 @@ def custom_sources_node(state: NewsCollectionState) -> NewsCollectionState:
     """User-provided custom sources (RSS feed URLs or HTML pages).
 
     Strategy per URL:
-    0. feedparser with _KNOWN_FEEDS lookup + auto-discovery (mirrors rss_feeds_node).
-       Handles all official RSS/Atom feeds — NVIDIA, HuggingFace, Cloudflare, AWS, etc.
     1. Try RSS/Atom via cmbagent's _fetch_rss_items (date-filtered).
     2. Try cmbagent's _direct_scrape_page_links (requires article-path signals).
     3. Fall back to _scrape_page_permissive which accepts any same-domain link
@@ -1152,59 +1035,6 @@ def custom_sources_node(state: NewsCollectionState) -> NewsCollectionState:
     seen = list(state["seen_keys"])
     errors = list(state["errors"])
 
-    _date_from  = _parse_date(state["date_from"])
-    _date_to_dt = _parse_date(state["date_to"])
-    _date_to_eod = _date_to_dt.replace(hour=23, minute=59, second=59) if _date_to_dt else None
-
-    try:
-        import feedparser as _feedparser
-        _fp_ok = True
-    except ImportError:
-        _fp_ok = False
-
-    def _try_feedparser(url: str, source_label: str) -> List[Dict]:
-        """feedparser with _KNOWN_FEEDS lookup + common-suffix auto-discovery + date filter."""
-        if not _fp_ok:
-            return []
-        resolved = (_KNOWN_FEEDS.get(url.rstrip("/") + "/")
-                    or _KNOWN_FEEDS.get(url.rstrip("/"))
-                    or url)
-        f = _feedparser.parse(resolved, request_headers=_CHROME_UA)
-        if not f.entries:
-            for suffix in ("/feed/", "/feed.xml", "/rss/", "/atom.xml"):
-                try:
-                    f2 = _feedparser.parse(url.rstrip("/") + suffix, request_headers=_CHROME_UA)
-                    if f2.entries:
-                        f = f2
-                        break
-                except Exception:
-                    pass
-        items: List[Dict] = []
-        feed_title = f.feed.get("title") or source_label
-        for entry in f.entries:
-            pub_dt: Optional[datetime] = None
-            pub_str = ""
-            if entry.get("published_parsed"):
-                pub_dt = _parse_struct_time(entry.published_parsed)
-                pub_str = pub_dt.strftime("%Y-%m-%d") if pub_dt else ""
-            elif entry.get("updated_parsed"):
-                pub_dt = _parse_struct_time(entry.updated_parsed)
-                pub_str = pub_dt.strftime("%Y-%m-%d") if pub_dt else ""
-            else:
-                raw = entry.get("published") or entry.get("updated") or ""
-                pub_dt = _parse_date(raw)
-                pub_str = raw[:10] if raw else ""
-            if pub_dt and _date_from and _date_to_eod:
-                if not (_date_from <= pub_dt <= _date_to_eod):
-                    continue
-            title = (entry.get("title") or "").strip()
-            entry_url = (entry.get("link") or "").strip()
-            summary = _strip_html(entry.get("summary") or "")[:500]
-            if title and entry_url:
-                items.append({"title": title, "url": entry_url, "summary": summary,
-                              "source": feed_title, "published_at": pub_str})
-        return items
-
     if _news_tools is not None:
         _fetch_rss = getattr(_news_tools, "_fetch_rss_items", None)
         _scrape    = getattr(_news_tools, "_direct_scrape_page_links", None)
@@ -1217,18 +1047,7 @@ def custom_sources_node(state: NewsCollectionState) -> NewsCollectionState:
             continue
         label = (urlparse(url).netloc or "custom").replace("www.", "")[:30]
 
-        # 0. feedparser (mirrors rss_feeds_node — covers all official RSS/Atom feeds)
-        try:
-            fp_items = _try_feedparser(url, label)
-            if fp_items:
-                before = len(collected)
-                collected, seen = _merge_items(fp_items, collected, seen)
-                print(f"[Collection] Custom/{label} (feedparser): {len(collected) - before} items")
-                continue
-        except Exception:
-            pass
-
-        # 1. RSS via cmbagent
+        # 1. RSS
         if _fetch_rss is not None:
             try:
                 rss_items = _fetch_rss(url, label, state["date_from"], state["date_to"])
