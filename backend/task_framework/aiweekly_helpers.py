@@ -1058,14 +1058,8 @@ def build_review_critique_kwargs(
     api_keys: dict | None = None,
     config_overrides: dict | None = None,
     callbacks=None,
-    missing_items: str | None = None,
 ) -> dict:
-    """Build kwargs for one_shot() — Stage 4 Pass A: critical audit.
-
-    missing_items: output of the Stage 3.5 coverage check — items absent from
-    the draft. When present, prepended to the critic prompt so they are
-    guaranteed to surface as corrections.
-    """
+    """Build kwargs for one_shot() — Stage 4 Pass A: critical audit."""
     from backend.task_framework.prompts.aiweekly.stages import (
         review_critic_prompt,
     )
@@ -1121,14 +1115,6 @@ def build_review_critique_kwargs(
             word_rule=word_rule,
             draft_report=draft_report,
             curated_items=compact_curated,
-        )
-
-    if missing_items:
-        task = (
-            "PRIORITY — Coverage check identified these curated items as ABSENT from the draft. "
-            "They MUST each appear as a numbered correction:\n"
-            f"{missing_items}\n\n"
-            + task
         )
 
     return dict(

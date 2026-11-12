@@ -683,52 +683,6 @@ async def _run_aiweekly_one_shot_stage(
         draft_report = shared_state.get("draft_report", "")
         curated_items = shared_state.get("curated_items", "")
 
-        # Stage 3.5 — Coverage check: find curated items absent from the draft
-        with _console_lock:
-            _console_buffers.setdefault(buf_key, []).append(
-                "Running coverage check (finding items missing from draft)..."
-            )
-
-        coverage_kwargs = helpers.build_coverage_check_kwargs(
-            draft_report=draft_report,
-            curated_items=curated_items,
-            date_from=date_from,
-            date_to=date_to,
-            work_dir=work_dir,
-            config_overrides=config_overrides,
-            callbacks=callbacks,
-        )
-        original_stdout, original_stderr = sys.stdout, sys.stderr
-        capture_out = _ConsoleCapture(buf_key, original_stdout)
-        capture_err = _ConsoleCapture(buf_key, original_stderr)
-        try:
-            sys.stdout = capture_out
-            sys.stderr = capture_err
-            coverage_result = await asyncio.to_thread(_run_one_shot_sync, **coverage_kwargs)
-        except Exception as _cov_err:
-            logger.warning("Stage 3.5 coverage check failed: %s", _cov_err)
-            coverage_result = {}
-        finally:
-            sys.stdout = original_stdout
-            sys.stderr = original_stderr
-
-        missing_items = helpers.extract_coverage_gaps(coverage_result)
-        helpers.save_stage_file(
-            missing_items or "No gaps — all items covered.",
-            work_dir, "coverage_gaps.md",
-        )
-        if missing_items:
-            gap_count = missing_items.count("- **")
-            with _console_lock:
-                _console_buffers.setdefault(buf_key, []).append(
-                    f"Coverage check: {gap_count} item(s) missing — injecting into critic prompt"
-                )
-        else:
-            with _console_lock:
-                _console_buffers.setdefault(buf_key, []).append(
-                    "Coverage check: all curated items found in draft"
-                )
-
         # Determine if curated data needs chunked critic passes
         from backend.task_framework.token_utils import count_tokens, get_model_limits
         model_for_review = config_overrides.get("model", "gpt-4o")
@@ -774,7 +728,6 @@ async def _run_aiweekly_one_shot_stage(
                     work_dir=work_dir,
                     config_overrides=config_overrides,
                     callbacks=callbacks,
-                    missing_items=missing_items if ci == 1 else None,
                 )
                 original_stdout, original_stderr = sys.stdout, sys.stderr
                 capture_out = _ConsoleCapture(buf_key, original_stdout)
@@ -822,7 +775,6 @@ async def _run_aiweekly_one_shot_stage(
                 work_dir=work_dir,
                 config_overrides=config_overrides,
                 callbacks=callbacks,
-                missing_items=missing_items,
             )
 
             original_stdout, original_stderr = sys.stdout, sys.stderr
