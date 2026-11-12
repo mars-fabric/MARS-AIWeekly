@@ -56,8 +56,8 @@ STAGE_NAMES = {d["number"]: d["name"] for d in STAGE_DEFS}
 
 def _get_default_model() -> str:
     try:
-        from cmbagent.config import get_workflow_config
-        return get_workflow_config().default_llm_model
+        from cmbagent.config.model_registry import get_model_registry
+        return get_model_registry().get_default_model()
     except Exception:
         return "gpt-4o"
 
@@ -218,10 +218,10 @@ def _patch_formatter_once():
     up to the cut point) and avoid the issue entirely.
     """
     try:
-        from cmbagent.agents.researcher_response_formatter.researcher_response_formatter import (
-            ResearcherResponseFormatterAgent,
+        from cmbagent.agents.research.researcher_response_evaluator.researcher_response_evaluator import (
+            ResearcherResponseEvaluatorAgent,
         )
-        StructuredMd = ResearcherResponseFormatterAgent.StructuredMardown
+        StructuredMd = ResearcherResponseEvaluatorAgent.StructuredMardown
 
         def _safe_format(self) -> str:
             import re as _re
@@ -352,8 +352,40 @@ async def _run_aiweekly_one_shot_stage(
         item_count = output_data.get("artifacts", {}).get("item_count", 0)
         with _console_lock:
             _console_buffers.setdefault(buf_key, []).append(
-                f"Data collection complete — {item_count} items"
+                f"Data collection complete — {item_count} items. "
+                "Running summarizer enrichment on top items..."
             )
+
+        # Stage 1.5 — enrich top items with the summarizer agent
+        raw_collection = output_data["shared"].get("raw_collection", "")
+        if raw_collection:
+            original_stdout, original_stderr = sys.stdout, sys.stderr
+            capture_out = _ConsoleCapture(buf_key, original_stdout)
+            capture_err = _ConsoleCapture(buf_key, original_stderr)
+            try:
+                sys.stdout = capture_out
+                sys.stderr = capture_err
+                enriched = await asyncio.to_thread(
+                    helpers.enrich_top_items_with_summarizer,
+                    raw_collection=raw_collection,
+                    work_dir=work_dir,
+                    api_keys=None,
+                    config_overrides=config_overrides,
+                    callbacks=callbacks,
+                )
+            except Exception as _enrich_err:
+                logger.warning("Stage 1.5 summarizer enrichment failed: %s", _enrich_err)
+                enriched = raw_collection
+            finally:
+                sys.stdout = original_stdout
+                sys.stderr = original_stderr
+
+            output_data["shared"]["raw_collection"] = enriched
+            with _console_lock:
+                _console_buffers.setdefault(buf_key, []).append(
+                    "Summarizer enrichment complete"
+                )
+
         return output_data
 
     # Stages 2-4: build kwargs, run one_shot (multi-pass for stages 3 & 4)
@@ -651,6 +683,52 @@ async def _run_aiweekly_one_shot_stage(
         draft_report = shared_state.get("draft_report", "")
         curated_items = shared_state.get("curated_items", "")
 
+        # Stage 3.5 — Coverage check: find curated items absent from the draft
+        with _console_lock:
+            _console_buffers.setdefault(buf_key, []).append(
+                "Running coverage check (finding items missing from draft)..."
+            )
+
+        coverage_kwargs = helpers.build_coverage_check_kwargs(
+            draft_report=draft_report,
+            curated_items=curated_items,
+            date_from=date_from,
+            date_to=date_to,
+            work_dir=work_dir,
+            config_overrides=config_overrides,
+            callbacks=callbacks,
+        )
+        original_stdout, original_stderr = sys.stdout, sys.stderr
+        capture_out = _ConsoleCapture(buf_key, original_stdout)
+        capture_err = _ConsoleCapture(buf_key, original_stderr)
+        try:
+            sys.stdout = capture_out
+            sys.stderr = capture_err
+            coverage_result = await asyncio.to_thread(_run_one_shot_sync, **coverage_kwargs)
+        except Exception as _cov_err:
+            logger.warning("Stage 3.5 coverage check failed: %s", _cov_err)
+            coverage_result = {}
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+
+        missing_items = helpers.extract_coverage_gaps(coverage_result)
+        helpers.save_stage_file(
+            missing_items or "No gaps — all items covered.",
+            work_dir, "coverage_gaps.md",
+        )
+        if missing_items:
+            gap_count = missing_items.count("- **")
+            with _console_lock:
+                _console_buffers.setdefault(buf_key, []).append(
+                    f"Coverage check: {gap_count} item(s) missing — injecting into critic prompt"
+                )
+        else:
+            with _console_lock:
+                _console_buffers.setdefault(buf_key, []).append(
+                    "Coverage check: all curated items found in draft"
+                )
+
         # Determine if curated data needs chunked critic passes
         from backend.task_framework.token_utils import count_tokens, get_model_limits
         model_for_review = config_overrides.get("model", "gpt-4o")
@@ -696,6 +774,7 @@ async def _run_aiweekly_one_shot_stage(
                     work_dir=work_dir,
                     config_overrides=config_overrides,
                     callbacks=callbacks,
+                    missing_items=missing_items if ci == 1 else None,
                 )
                 original_stdout, original_stderr = sys.stdout, sys.stderr
                 capture_out = _ConsoleCapture(buf_key, original_stdout)
@@ -743,6 +822,7 @@ async def _run_aiweekly_one_shot_stage(
                 work_dir=work_dir,
                 config_overrides=config_overrides,
                 callbacks=callbacks,
+                missing_items=missing_items,
             )
 
             original_stdout, original_stderr = sys.stdout, sys.stderr

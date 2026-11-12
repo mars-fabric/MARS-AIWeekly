@@ -21,18 +21,18 @@ workflow_defaults:
 
   aiweekly:
     default:  # Fallback for any stage without explicit config
-      researcher_model: "gpt-4.1-2025-04-14"
-      orchestration_model: "gpt-4.1-2025-04-14"
-      formatter_model: "o3-mini"
-    "2":  # Content Curation (researcher — fact-check & deduplicate)
-      researcher_model: "gpt-4.1-2025-04-14"
-      orchestration_model: "gpt-4.1-2025-04-14"
-      formatter_model: "o3-mini"
-    "3":  # Report Generation (researcher — structured writing)
-      researcher_model: "gpt-4.1-2025-04-14"
-      orchestration_model: "gpt-4.1-2025-04-14"
-      formatter_model: "o3-mini"
-    "4":  # Quality Review (researcher — edit, verify, polish)
-      researcher_model: "gpt-4.1-2025-04-14"
-      orchestration_model: "gpt-4.1-2025-04-14"
-      formatter_model: "o3-mini"
+      researcher_model: "gpt-4o"
+      orchestration_model: "gpt-4o-mini"
+      formatter_model: "gpt-4o-mini"
+    "2":  # Content Curation — fast model sufficient for dedup/validation
+      researcher_model: "gpt-4o-mini"
+      orchestration_model: "gpt-4o-mini"
+      formatter_model: "gpt-4o-mini"
+    "3":  # Report Generation — best model for structured writing
+      researcher_model: "gpt-4o"
+      orchestration_model: "gpt-4o-mini"
+      formatter_model: "gpt-4o-mini"
+    "4":  # Quality Review — best model for fact-checking and editing
+      researcher_model: "gpt-4o"
+      orchestration_model: "gpt-4o-mini"
+      formatter_model: "gpt-4o-mini"

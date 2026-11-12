@@ -45,6 +45,56 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# ─── Patch cmbagent's DDGS backend ───────────────────────────────────────────
+# cmbagent hardcodes backend="html" which always times out on html.duckduckgo.com.
+# Patch 1: _ddgs_text_search — use backend="auto" (Yahoo/Brave fallback, actually works).
+# Patch 2: multi_engine_web_search — skip HTML scraping of Bing/Yahoo/Brave; those
+#   scrapers get 429/500 on 20+ company searches and add minutes of wasted requests.
+#   Return DDGS results only; empty is fine — RSS/curated nodes cover the same companies.
+if _news_tools is not None:
+    try:
+        import cmbagent.external_tools.news_tools as _nt_patch
+
+        def _patched_ddgs_text_search(query: str, max_results: int = 10):
+            try:
+                from ddgs import DDGS
+                raw = DDGS(proxy=None).text(query, max_results=max(1, max_results), backend="auto")
+                if not raw:
+                    return []
+                return [
+                    {"title": r.get("title") or r.get("href", ""), "url": r.get("href") or r.get("link", ""), "engine": "ddgs"}
+                    for r in raw
+                    if (r.get("href") or r.get("link"))
+                    and not (r.get("href") or r.get("link") or "").startswith(("http://localhost", "http://127."))
+                ]
+            except Exception as _err:
+                logger.warning("ddgs_search_failed query=%s error=%s", query, _err)
+                return []
+
+        def _patched_multi_engine_web_search(query: str, max_results: int = 10, from_date: str = "", to_date: str = ""):
+            q = (query or "").strip()
+            if not q:
+                return {"provider": "multi_engine_web_search", "query": query, "count": 0, "items": [], "errors": ["empty query"]}
+            if from_date and to_date and from_date not in q and to_date not in q:
+                q = f"{q} after:{from_date} before:{to_date}"
+            items = _patched_ddgs_text_search(q, max_results=max_results)
+            return {
+                "provider": "multi_engine_web_search",
+                "query": q,
+                "engines_used": ["duckduckgo_sdk"],
+                "count": len(items),
+                "items": items,
+                "errors": [] if items else ["duckduckgo_sdk returned no results"],
+            }
+
+        _nt_patch._ddgs_text_search = _patched_ddgs_text_search
+        _nt_patch.multi_engine_web_search = _patched_multi_engine_web_search
+        # Drop the 1s inter-source delay — with DDGS auto backend there's no need to
+        # rate-limit manually; the 30-source × 7-topic loop adds 210s of wasted sleep.
+        _nt_patch._CURATED_SEARCH_INTER_SOURCE_DELAY = 0.1
+    except Exception:
+        pass
+
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 # Fixed set of core AI companies always scraped via cmbagent (Tier 1).
@@ -56,59 +106,113 @@ _CORE_AI_COMPANIES: List[str] = [
     "ibm", "mistral", "xai", "deepseek", "cohere", "perplexity",
 ]
 
-# Global AI news RSS feeds — official company and research sources only.
-# Third-party news aggregators (TechCrunch, VentureBeat, The Verge, etc.) are
-# intentionally excluded so all items link back to primary/official sources.
-_GLOBAL_RSS_FEEDS: List[str] = [
-    # AI research, news, and engineering sources
-"https://openai.com/news/",
-"https://openai.com/research/",
-"https://www.anthropic.com/news",
-"https://www.anthropic.com/research",
+# Supplementary blog/news sources NOT already covered by cmbagent.external_tools.news_tools.
+#
+# cmbagent's _COMPANY_RSS_FEEDS (official RSS endpoints for major AI companies) and
+# _OFFICIAL_NEWS_PAGES (scraping targets) are imported dynamically in rss_feeds_node
+# to stay in sync with cmbagent updates — no need to repeat them here.
+#
+# This list contains ONLY:
+#   • Sub-category/tag feeds that are more specific than cmbagent's top-level feeds
+#   • Blog pages for companies cmbagent doesn't track at all
+#   • Supplementary paths for large companies (broader topic coverage)
+_SUPPLEMENTARY_RSS_SOURCES: List[str] = [
+    # ── Google sub-paths (cmbagent has /technology/ai/rss/ and research.google feed) ─
+    "https://blog.google/",
+    "https://blog.google/innovation-and-ai/",
 
-"https://blog.google/",
-"https://blog.google/technology/ai/",
-"https://blog.google/innovation-and-ai/",
-"https://blog.google/innovation-and-ai/technology/ai/",
-"https://blog.google/innovation-and-ai/technology/research/",
-"https://research.google/blog/",
-"https://deepmind.google/blog/",
+    # ── Microsoft: Azure announcements sub-path only ──────────────────────────────────
+    # microsoft.ai/blog/ → 403; blogs.microsoft.com/feed/ → 403 (cmbagent — also dead)
+    "https://azure.microsoft.com/en-us/blog/content-type/announcements/",
 
-"https://blogs.microsoft.com/",
-"https://blogs.microsoft.com/ai/",
-"https://microsoft.ai/",
-"https://microsoft.ai/blog/",
-"https://www.microsoft.com/en-us/research/blog/",
-"https://azure.microsoft.com/en-us/blog/",
-"https://azure.microsoft.com/en-us/blog/content-type/announcements/",
+    # ── NVIDIA tag feeds (cmbagent has main blogs.nvidia.com/feed/ only) ─────────────
+    "https://blogs.nvidia.com/blog/tag/agentic-ai/",
+    "https://blogs.nvidia.com/blog/tag/inference/",
 
-"https://ai.meta.com/blog/",
-"https://ai.meta.com/research/",
+    # ── AWS general blog (cmbagent only has machine-learning blog feed) ──────────────
+    "https://aws.amazon.com/blogs/aws/",
 
-"https://aws.amazon.com/blogs/aws/",
-"https://aws.amazon.com/blogs/machine-learning/",
+    # ── Hugging Face (in cmbagent's _OFFICIAL_NEWS_PAGES but not _COMPANY_RSS_FEEDS) ─
+    "https://huggingface.co/blog",
 
-"https://blogs.nvidia.com/blog/category/ai/",
-"https://blogs.nvidia.com/blog/tag/agentic-ai/",
-"https://blogs.nvidia.com/blog/tag/inference/",
-"https://developer.nvidia.com/blog/",
-
-"https://huggingface.co/blog",
-
-"https://cohere.com/blog",
-
-"https://www.perplexity.ai/hub/blog",
+    # ── Companies not in cmbagent at all ─────────────────────────────────────────────
+    "https://cohere.com/blog",
+    "https://www.perplexity.ai/hub/blog",
+    "https://mistral.ai/news",
+    # x.ai/blog → 403 (blocks all bots); xAI covered via web-search in company_scrape
+    "https://www.deepseek.com/news",
 ]
 
-# Add companies not in cmbagent's _OFFICIAL_NEWS_PAGES, and fix Anthropic's
-# broken RSS entry. All existing company URLs are already in _GLOBAL_RSS_FEEDS
-# and are handled by rss_feeds_node — no need to duplicate them here.
+# Extend cmbagent's maps with companies it doesn't track, and correct stale feeds.
+# Feed status verified 2026-11: several cmbagent feeds have gone dead or 403-blocked.
 if _news_tools is not None:
+    # Add companies missing from cmbagent's _OFFICIAL_NEWS_PAGES
     _news_tools._OFFICIAL_NEWS_PAGES.update({
         "cohere":     ["https://cohere.com/blog"],
         "perplexity": ["https://www.perplexity.ai/hub/blog"],
+        "mistral":    ["https://mistral.ai/news", "https://mistral.ai/research"],
+        "xai":        ["https://x.ai/blog"],           # 403 for direct scrape; web-search fallback works
+        "deepseek":   ["https://www.deepseek.com/news"],
     })
+    for _co in ("cohere", "perplexity", "mistral", "xai", "deepseek"):
+        _news_tools._COMPANY_RSS_FEEDS.setdefault(_co, [])
+
+    # Override dead/blocked cmbagent RSS feeds with verified-live alternatives.
+    # google: research.google/feeds/blog.xml → 404; replaced with /blog/rss/
+    _news_tools._COMPANY_RSS_FEEDS["google"] = [
+        "https://blog.google/technology/ai/rss/",
+        "https://research.google/blog/rss/",
+    ]
+    # microsoft: blogs.microsoft.com/feed/ and research/feed/ → both 403
+    _news_tools._COMPANY_RSS_FEEDS["microsoft"] = [
+        "https://azure.microsoft.com/en-us/blog/feed/",
+    ]
+    # meta: ai.meta.com/blog/rss/ → 404; engineering.fb.com/feed/ still live
+    _news_tools._COMPANY_RSS_FEEDS["meta"] = [
+        "https://engineering.fb.com/feed/",
+    ]
+    # ibm: research.ibm.com/blog/rss → 404; ibm.com/think is the new blog (live RSS)
+    _news_tools._OFFICIAL_NEWS_PAGES["ibm"] = [
+        "https://www.ibm.com/think/",
+        "https://www.ibm.com/think/artificial-intelligence",
+        "https://research.ibm.com/quantum",
+        "https://research.ibm.com/blog",
+        "https://www.ibm.com/quantum/blog",
+    ]
+    _news_tools._COMPANY_RSS_FEEDS["ibm"] = [
+        "https://www.ibm.com/think/feed/",
+    ]
+    # oracle: both feeds → 403 blocked
+    _news_tools._COMPANY_RSS_FEEDS["oracle"] = []
+    # bostondynamics: blog/feed → 404; no working alternative found
+    _news_tools._COMPANY_RSS_FEEDS["bostondynamics"] = []
+    # anthropic: rss/news → 404; web-search fallback works better
     _news_tools._COMPANY_RSS_FEEDS["anthropic"] = []
+
+    # Patch _CURATED_AI_NEWS_SOURCES: remove dead/blocked entries, add missing companies.
+    # Verified 2026-11: openai.com/blog → 403, oracle blogs → 403,
+    # artificialintelligence-news.com → 502, amd.com/en/blogs → timeout
+    _dead_curated = {
+        "https://openai.com/blog",                        # 403
+        "https://blogs.oracle.com/ai-and-datascience",    # 403
+        "https://blogs.oracle.com/cloud-infrastructure",  # 403
+        "https://artificialintelligence-news.com",        # 502
+        "https://www.amd.com/en/blogs",                   # connection timeout
+        "https://research.ibm.com/quantum",               # replaced by ibm.com/think
+    }
+    _news_tools._CURATED_AI_NEWS_SOURCES[:] = [
+        s for s in _news_tools._CURATED_AI_NEWS_SOURCES
+        if s["url"] not in _dead_curated
+    ]
+    _news_tools._CURATED_AI_NEWS_SOURCES.extend([
+        {"name": "IBM Think Blog",      "url": "https://www.ibm.com/think"},
+        {"name": "IBM Think AI",        "url": "https://www.ibm.com/think/artificial-intelligence"},
+        {"name": "Mistral AI News",     "url": "https://mistral.ai/news"},
+        {"name": "DeepSeek News",       "url": "https://www.deepseek.com/news"},
+        {"name": "Stability AI News",   "url": "https://stability.ai/news"},
+        {"name": "Cohere Blog",         "url": "https://cohere.com/blog"},
+        {"name": "Perplexity Blog",     "url": "https://www.perplexity.ai/hub/blog"},
+    ])
 
 # Major AI repos monitored for release notes via the GitHub public API.
 _GITHUB_AI_REPOS: List[str] = [
@@ -159,25 +263,55 @@ def _strip_html(text: str) -> str:
 
 
 def _parse_date(date_str: str) -> Optional[datetime]:
-    """Parse a date string in ISO, RFC 2822, and common formats."""
+    """Parse a date string — ISO variants, RFC 2822, US, and European formats.
+
+    Format coverage (ordered fastest-match first):
+    - ISO 8601 with milliseconds + Z/offset  (e.g. 2024-07-19T09:00:00.000Z)
+    - ISO 8601 with Z or offset              (e.g. 2024-07-19T09:00:00+00:00)
+    - ISO 8601 no timezone                   (e.g. 2024-07-19T09:00:00)
+    - ISO date-only and slash variant        (e.g. 2024-07-19 / 2024/07/19)
+    - US abbreviated+full month              (e.g. Jul 19, 2024 / July 19, 2024)
+    - European abbreviated+full month        (e.g. 19 Jul 2024 / 19 July 2024)
+    - RFC 2822 with numeric/named timezone   (e.g. Fri, 19 Jul 2024 09:00:00 +0000)
+    """
     if not date_str:
         return None
     s = str(date_str).strip()
+    # Strip trailing parenthetical timezone names, e.g. "+0530 (IST)" → "+0530"
+    s = re.sub(r'\s*\([A-Z]{2,5}\)\s*$', '', s).strip()
+
     for fmt in (
-        "%Y-%m-%dT%H:%M:%SZ",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d",
-        "%d %b %Y",
-        "%B %d, %Y",
-        "%a, %d %b %Y %H:%M:%S %z",
-        "%a, %d %b %Y %H:%M:%S %Z",
-        "%d %b %Y %H:%M:%S %z",
+        # ── ISO 8601 with milliseconds ──────────────────────────────────
+        "%Y-%m-%dT%H:%M:%S.%fZ",        # 2024-07-19T09:00:00.000Z
+        "%Y-%m-%dT%H:%M:%S.%f%z",       # 2024-07-19T09:00:00.000+05:30
+        # ── ISO 8601 with timezone (no ms) ──────────────────────────────
+        "%Y-%m-%dT%H:%M:%S%z",          # 2024-07-19T09:00:00+00:00
+        "%Y-%m-%dT%H:%M:%SZ",           # 2024-07-19T09:00:00Z
+        "%Y-%m-%dT%H:%M:%S",            # 2024-07-19T09:00:00
+        # ── ISO date + time with space separator ────────────────────────
+        "%Y-%m-%d %H:%M:%S",            # 2024-07-19 09:00:00
+        "%Y-%m-%d",                     # 2024-07-19
+        "%Y/%m/%d",                     # 2024/07/19
+        # ── US formats ──────────────────────────────────────────────────
+        "%b %d, %Y",                    # Jul 19, 2024
+        "%B %d, %Y",                    # July 19, 2024
+        "%B %d %Y",                     # July 19 2024
+        # ── European formats ────────────────────────────────────────────
+        "%d %b %Y",                     # 19 Jul 2024
+        "%d %B %Y",                     # 19 July 2024
+        # ── RFC 2822 ────────────────────────────────────────────────────
+        "%a, %d %b %Y %H:%M:%S %z",     # Fri, 19 Jul 2024 09:00:00 +0000
+        "%a, %d %b %Y %H:%M:%S %Z",     # Fri, 19 Jul 2024 09:00:00 GMT
+        "%d %b %Y %H:%M:%S %z",         # 19 Jul 2024 09:00:00 +0000
     ):
         try:
-            return datetime.strptime(s[:31], fmt).replace(tzinfo=None)
+            return datetime.strptime(s, fmt).replace(tzinfo=None)
         except (ValueError, IndexError):
             continue
+
+    # Last resort: try the first 25 chars (handles trailing noise after a valid date)
+    if len(s) > 25:
+        return _parse_date(s[:25])
     return None
 
 
@@ -187,6 +321,90 @@ def _parse_struct_time(st) -> Optional[datetime]:
         return datetime.utcfromtimestamp(timegm(st))
     except Exception:
         return None
+
+
+def _fetch_article_date(url: str, timeout: int = 8) -> str:
+    """Fetch an article page and extract its publication date using all known web techniques.
+
+    Tries in order of reliability:
+    - Open Graph / article meta tags  (article:published_time, og:published_time)
+    - JSON-LD structured data         (datePublished, dateCreated, dateModified, uploadDate)
+    - Schema.org microdata            (itemprop="datePublished")
+    - Standard HTML meta tags         (<meta name="date">, DC.date, publish_date)
+    - Twitter card meta               (twitter:published_time)
+    - <time datetime="..."> elements
+    - URL path pattern                (/YYYY/MM/DD/)
+
+    Returns "YYYY-MM-DD" on success, "" on failure.
+    """
+    try:
+        from urllib.request import Request, urlopen
+        req = Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "identity",
+        })
+        with urlopen(req, timeout=timeout) as resp:
+            # Read at most 200 KB — the date is always near the top of the HTML
+            html = resp.read(200_000).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+    # Ordered from most reliable to least reliable
+    _PATTERNS = [
+        # Open Graph / article meta (both attribute-order variants)
+        r'<meta\b[^>]*\bproperty=["\']article:published_time["\'][^>]*\bcontent=["\']([^"\']+)["\']',
+        r'<meta\b[^>]*\bcontent=["\']([^"\']+)["\'][^>]*\bproperty=["\']article:published_time["\']',
+        r'<meta\b[^>]*\bproperty=["\']og:article:published_time["\'][^>]*\bcontent=["\']([^"\']+)["\']',
+        r'<meta\b[^>]*\bcontent=["\']([^"\']+)["\'][^>]*\bproperty=["\']og:article:published_time["\']',
+        r'<meta\b[^>]*\bproperty=["\']og:published_time["\'][^>]*\bcontent=["\']([^"\']+)["\']',
+        r'<meta\b[^>]*\bcontent=["\']([^"\']+)["\'][^>]*\bproperty=["\']og:published_time["\']',
+        # JSON-LD structured data
+        r'"datePublished"\s*:\s*"([^"]+)"',
+        r'"dateCreated"\s*:\s*"([^"]+)"',
+        r'"dateModified"\s*:\s*"([^"]+)"',
+        r'"uploadDate"\s*:\s*"([^"]+)"',
+        # Schema.org microdata (itemprop)
+        r'itemprop=["\']datePublished["\'][^>]*\bcontent=["\']([^"\']+)["\']',
+        r'itemprop=["\']datePublished["\'][^>]*\bdatetime=["\']([^"\']+)["\']',
+        r'<[^>]+\bitemprop=["\']datePublished["\'][^>]*>([^<]{6,30})<',
+        # Standard HTML meta name tags
+        r'<meta\b[^>]*\bname=["\']date["\'][^>]*\bcontent=["\']([^"\']+)["\']',
+        r'<meta\b[^>]*\bcontent=["\']([^"\']+)["\'][^>]*\bname=["\']date["\']',
+        r'<meta\b[^>]*\bname=["\']publish[_-]?date["\'][^>]*\bcontent=["\']([^"\']+)["\']',
+        r'<meta\b[^>]*\bname=["\']article[_-]?date["\'][^>]*\bcontent=["\']([^"\']+)["\']',
+        r'<meta\b[^>]*\bname=["\']DC\.date\.issued["\'][^>]*\bcontent=["\']([^"\']+)["\']',
+        r'<meta\b[^>]*\bname=["\']DC\.date["\'][^>]*\bcontent=["\']([^"\']+)["\']',
+        r'<meta\b[^>]*\bname=["\']dc\.date["\'][^>]*\bcontent=["\']([^"\']+)["\']',
+        # Twitter card
+        r'<meta\b[^>]*\bname=["\']twitter:published_time["\'][^>]*\bcontent=["\']([^"\']+)["\']',
+        # <time> elements
+        r'<time\b[^>]*\bdatetime=["\']([^"\']+)["\']',
+        r'<time\b[^>]*\bcontent=["\']([^"\']+)["\']',
+    ]
+
+    for pat in _PATTERNS:
+        m = re.search(pat, html, re.I)
+        if m:
+            raw = m.group(1).strip()
+            # Fast ISO prefix check
+            iso = re.match(r"(20\d{2}-\d{2}-\d{2})", raw)
+            if iso:
+                return iso.group(1)
+            # Delegate to full parser for other formats
+            parsed = _parse_date(raw)
+            if parsed:
+                return parsed.strftime("%Y-%m-%d")
+
+    # Last resort: date in the URL path itself
+    url_date = re.search(r"/(20\d{2})[/-](0[1-9]|1[0-2])[/-](\d{1,2})(?:[/-]|$)", url)
+    if url_date:
+        y, mo, d = url_date.group(1), url_date.group(2), url_date.group(3)
+        return f"{y}-{mo}-{d.zfill(2)}"
+
+    return ""
 
 
 def _merge_items(
@@ -228,12 +446,61 @@ def _compute_topic_coverage(
     return coverage
 
 
+# Map frontend topic IDs → full search terms.
+# Without this, short aliases like "cv" → "cv AI" which search engines can't
+# interpret (cv = curriculum vitae to most engines), and "rl" → "rl AI" is
+# equally meaningless. Quantum and robotics also need explicit expansion.
+# Map frontend topic IDs → full search terms.
+# Short aliases like "cv" and "rl" are expanded to their proper names so
+# search engines find relevant content (cv = curriculum vitae to most engines).
+# Known AI subfields don't need "AI" appended — they are unambiguously AI topics.
+# Only truly ambiguous user-defined topics get "AI" added as a fallback.
+_TOPIC_SEARCH_EXPANSION: Dict[str, str] = {
+    "llm":        "large language models",
+    "cv":         "computer vision image recognition",
+    "rl":         "reinforcement learning",
+    "robotics":   "robotics autonomous systems",
+    "quantum":    "quantum computing",
+    "ml-open-ai": "machine learning",
+    "ml open ai": "machine learning",
+    "ai":         "artificial intelligence",
+    "nlp":        "natural language processing",
+    "multimodal": "multimodal vision language model",
+    "agents":     "AI agents agentic automation",
+    "diffusion":  "diffusion model generative AI",
+    "healthcare": "healthcare AI medical",
+    "autonomous": "autonomous driving self-driving",
+    "ml":         "machine learning",
+    "dl":         "deep learning neural network",
+}
+
+# Terms that indicate a query is already clearly AI/tech — no "AI" suffix needed
+_IMPLICIT_AI_TERMS = (
+    "ai", "artificial intelligence", "machine learning", "deep learning",
+    "quantum", "neural", "language model", "llm", "computer vision",
+    "reinforcement", "robotics", "autonomous", "diffusion", "generative",
+    "transformer", "multimodal", "nlp",
+)
+
+
 def _topic_to_search_query(topic: str) -> str:
-    """Convert a user topic string to a natural-language search query."""
-    q = topic.lower().replace("-", " ").replace("_", " ").strip()
-    if "ai" not in q and "artificial intelligence" not in q and "machine learning" not in q:
-        q = q + " AI"
-    return q
+    """Convert a user topic string to a natural-language search query.
+
+    Known topic IDs (cv, rl, llm, quantum, robotics …) are expanded to their
+    full names so search engines return relevant results.
+    For arbitrary user-defined topics not in the map, 'AI' is appended only
+    when the topic is genuinely ambiguous (e.g. 'video generation' → adds AI;
+    'healthcare AI' → already clear, no change).
+    """
+    slug = topic.lower().replace("-", " ").replace("_", " ").strip()
+    expanded = (
+        _TOPIC_SEARCH_EXPANSION.get(topic.lower().strip())
+        or _TOPIC_SEARCH_EXPANSION.get(slug)
+        or slug
+    )
+    if not any(kw in expanded.lower() for kw in _IMPLICIT_AI_TERMS):
+        expanded = expanded + " AI"
+    return expanded
 
 
 def _topic_to_arxiv_query(topic: str) -> str:
@@ -384,9 +651,10 @@ def _parse_ddg_snippet(raw: str, query: str) -> List[Dict[str, Any]]:
 def broad_sweep_node(state: NewsCollectionState) -> NewsCollectionState:
     """Broad official AI announcements sweep via cmbagent (no limits).
 
-    Only runs when "press-releases" is selected in the UI.
+    Only runs when "press-releases" or "official-websites" is selected in the UI.
     """
-    if "press-releases" not in (state.get("sources") or []):
+    _sources = state.get("sources") or []
+    if "press-releases" not in _sources and "official-websites" not in _sources:
         return state
     try:
         from cmbagent.external_tools.news_tools import announcements_noauth
@@ -409,9 +677,10 @@ def curated_sources_node(state: NewsCollectionState) -> NewsCollectionState:
     Running per-topic (not one generic query) ensures curated sources
     return relevant articles for any topic the user specifies.
 
-    Only runs when "curated-ai-websites" is selected in the UI.
+    Only runs when "curated-ai-websites" or "official-websites" is selected in the UI.
     """
-    if "curated-ai-websites" not in (state.get("sources") or []):
+    _sources = state.get("sources") or []
+    if "curated-ai-websites" not in _sources and "official-websites" not in _sources:
         return state
     try:
         from cmbagent.external_tools.news_tools import curated_ai_sources_search
@@ -422,14 +691,19 @@ def curated_sources_node(state: NewsCollectionState) -> NewsCollectionState:
     seen = list(state["seen_keys"])
     errors = list(state["errors"])
 
-    queries: List[str] = [
-        f"{_topic_to_search_query(t)} news {state['date_from']} to {state['date_to']}"
-        for t in state["topics"]
-    ]
-    if not queries:
-        queries = [f"artificial intelligence news {state['date_from']} to {state['date_to']}"]
+    # Run once per broad topic group instead of once per topic.
+    # Groups topics into ≤3 combined queries to cover all user topics without
+    # repeating 30+ source searches n_topics times (which caused 3+ min delays).
+    topics = state.get("topics") or []
+    topic_terms = [_topic_to_search_query(t) for t in topics] if topics else ["artificial intelligence"]
+    # Chunk into groups of 3 so queries stay manageable
+    _chunk = 3
+    grouped_queries = [
+        " OR ".join(topic_terms[i:i + _chunk]) + f" news {state['date_from']} {state['date_to']}"
+        for i in range(0, len(topic_terms), _chunk)
+    ] or [f"artificial intelligence news {state['date_from']} {state['date_to']}"]
 
-    for query in queries:
+    for query in grouped_queries:
         try:
             result = curated_ai_sources_search(
                 query=query, limit=9999,
@@ -440,9 +714,9 @@ def curated_sources_node(state: NewsCollectionState) -> NewsCollectionState:
             collected, seen = _merge_items(items, collected, seen)
             added = len(collected) - before
             if added:
-                print(f"[Collection] Curated/{query[:55]}: {added} new items")
+                print(f"[Collection] Curated/{query[:60]}: {added} new items")
         except Exception as exc:
-            errors.append(f"curated_sources/{query[:40]}: {exc}")
+            errors.append(f"curated_sources: {exc}")
 
     return {**state, "collected_items": collected, "seen_keys": seen, "errors": errors}
 
@@ -453,9 +727,10 @@ def company_scrape_node(state: NewsCollectionState) -> NewsCollectionState:
     Uses a fixed list of 15 major AI companies — independent of user topics.
     These companies reliably publish AI news that is always relevant.
 
-    Only runs when "company-announcements" is selected in the UI.
+    Only runs when "company-announcements" or "official-websites" is selected in the UI.
     """
-    if "company-announcements" not in (state.get("sources") or []):
+    _sources = state.get("sources") or []
+    if "company-announcements" not in _sources and "official-websites" not in _sources:
         return state
     try:
         from cmbagent.external_tools.news_tools import scrape_official_news_pages
@@ -530,7 +805,7 @@ def company_ddg_news_node(state: NewsCollectionState) -> NewsCollectionState:
 
     for slug, query in _COMPANY_DDG_QUERIES.items():
         try:
-            with DDGS() as ddgs:
+            with DDGS(proxy=None) as ddgs:
                 results = list(ddgs.news(query, max_results=8))
             items = [
                 {
@@ -542,7 +817,8 @@ def company_ddg_news_node(state: NewsCollectionState) -> NewsCollectionState:
                     "published_at": r.get("date") or "",
                 }
                 for r in results
-                if r.get("url") or r.get("link")
+                if (r.get("url") or r.get("link"))
+                and not (r.get("url") or r.get("link") or "").startswith(("http://localhost", "http://127."))
             ]
             before = len(collected)
             collected, seen = _merge_items(items, collected, seen)
@@ -684,9 +960,13 @@ def newsapi_gnews_node(state: NewsCollectionState) -> NewsCollectionState:
 # ─── Tier 1 + common feeds ────────────────────────────────────────────────────
 
 def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
-    """Parse global AI RSS feeds via feedparser (date-filtered, no topic constraint).
+    """Parse AI RSS feeds via feedparser (date-filtered, no topic constraint).
 
-    Always runs — hardcoded feeds are independent of source checkbox selection.
+    Feed list is built dynamically:
+    1. cmbagent's _COMPANY_RSS_FEEDS — maintained official RSS endpoints per company
+    2. _SUPPLEMENTARY_RSS_SOURCES    — blog pages/feeds not covered by cmbagent
+
+    Always runs regardless of source checkbox selection.
     """
     try:
         import feedparser
@@ -700,15 +980,18 @@ def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
     date_to_dt = _parse_date(state["date_to"])
     date_to_eod = date_to_dt.replace(hour=23, minute=59, second=59) if date_to_dt else None
 
-    # Known RSS feed URLs for blog pages that don't auto-discover well
+    # Confirmed blog URL → RSS endpoint mappings for supplementary sources.
+    # All endpoints below were verified live (HTTP 200) on 2026-11.
+    # cmbagent's own feeds are already RSS endpoints and need no mapping here.
     _KNOWN_FEEDS = {
-        "https://huggingface.co/blog":                        "https://huggingface.co/blog/feed.xml",
-        "https://aws.amazon.com/blogs/aws/":                  "https://aws.amazon.com/blogs/aws/feed/",
-        "https://aws.amazon.com/blogs/machine-learning/":     "https://aws.amazon.com/blogs/machine-learning/feed/",
-        "https://blogs.nvidia.com/blog/category/ai/":         "https://blogs.nvidia.com/feed/",
-        "https://blogs.nvidia.com/blog/tag/agentic-ai/":      "https://blogs.nvidia.com/blog/tag/agentic-ai/feed/",
-        "https://blogs.nvidia.com/blog/tag/inference/":       "https://blogs.nvidia.com/blog/tag/inference/feed/",
-        "https://developer.nvidia.com/blog/":                 "https://developer.nvidia.com/blog/feed/",
+        "https://huggingface.co/blog":                   "https://huggingface.co/blog/feed.xml",
+        "https://aws.amazon.com/blogs/aws/":             "https://aws.amazon.com/blogs/aws/feed/",
+        "https://blogs.nvidia.com/blog/tag/agentic-ai/": "https://blogs.nvidia.com/blog/tag/agentic-ai/feed/",
+        "https://blogs.nvidia.com/blog/tag/inference/":  "https://blogs.nvidia.com/blog/tag/inference/feed/",
+        "https://blog.google/":                          "https://blog.google/rss/",
+        "https://blog.google/innovation-and-ai/":        "https://blog.google/innovation-and-ai/rss/",
+        "https://mistral.ai/news":                       "https://mistral.ai/news/rss",
+        "https://cohere.com/blog":                       "https://cohere.com/blog/rss",
     }
 
     def _try_feed(url: str):
@@ -717,15 +1000,26 @@ def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
         f = feedparser.parse(resolved)
         if f.entries:
             return f
-        # Auto-discovery fallback for unmapped URLs
-        for suffix in ("/feed/", "/feed.xml", "/rss/", "/atom/"):
+        # Auto-discovery fallback for unmapped blog page URLs
+        for suffix in ("/feed/", "/feed.xml", "/rss/", "/atom/", "/rss.xml"):
             candidate = url.rstrip("/") + suffix
             f2 = feedparser.parse(candidate)
             if f2.entries:
                 return f2
         return f
 
-    for feed_url in _GLOBAL_RSS_FEEDS:
+    # Build combined feed list: cmbagent's maintained RSS feeds + our supplements.
+    # cmbagent feeds are actual RSS endpoints (no auto-discovery needed).
+    # Supplements are blog page URLs that _try_feed will resolve to their RSS endpoints.
+    _cmbagent_rss: List[str] = []
+    if _news_tools is not None:
+        for _rss_list in _news_tools._COMPANY_RSS_FEEDS.values():
+            _cmbagent_rss.extend(f for f in _rss_list if f.startswith("http"))
+
+    # Deduplicate preserving order: cmbagent first (authoritative), then supplements
+    _feed_list = list(dict.fromkeys(_cmbagent_rss + _SUPPLEMENTARY_RSS_SOURCES))
+
+    for feed_url in _feed_list:
         try:
             feed = _try_feed(feed_url)
             source_label = feed.feed.get("title") or feed_url.split("/")[2]
@@ -833,7 +1127,7 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
         # Generic single-word/short category labels
         "science", "technology", "robotics", "infrastructure",
     }
-    _DATE_PAT = r"([A-Za-z]{3}\s+\d{1,2},?\s+20\d{2})"
+    _DATE_PAT = r"([A-Za-z]{3,9}\s+\d{1,2},?\s+20\d{2})"
 
     def _apex(netloc: str) -> str:
         """Return the company name that owns the domain.
@@ -857,10 +1151,12 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
     def _parse_inline_date(s: str) -> str:
         m = _re.search(_DATE_PAT, s)
         if m:
-            try:
-                return _dt.datetime.strptime(m.group(1).replace(",", ""), "%b %d %Y").strftime("%Y-%m-%d")
-            except ValueError:
-                pass
+            clean = m.group(1).replace(",", "")
+            for fmt in ("%b %d %Y", "%B %d %Y"):
+                try:
+                    return _dt.datetime.strptime(clean, fmt).strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
         return ""
 
     try:
@@ -882,6 +1178,39 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
     parsed_base = _urlparse(page_url)
     base_domain = parsed_base.netloc.lower().replace("www.", "")
     base_apex   = _apex(parsed_base.netloc)
+
+    # Strategy 0: extract a page-level publication date from meta tags and JSON-LD.
+    # Used as the last-resort fallback for items whose per-link date stays empty.
+    _page_date = ""
+    # <meta property="article:published_time" content="...">
+    _meta_m = _re.search(
+        r'<meta\b[^>]*\bproperty=["\']article:published_time["\'][^>]*\bcontent=["\']([^"\']+)["\']'
+        r'|<meta\b[^>]*\bcontent=["\']([^"\']+)["\'][^>]*\bproperty=["\']article:published_time["\']',
+        html, _re.I,
+    )
+    if _meta_m:
+        _raw = (_meta_m.group(1) or _meta_m.group(2) or "").strip()
+        _iso = _re.match(r"(20\d{2}-\d{2}-\d{2})", _raw)
+        if _iso:
+            _page_date = _iso.group(1)
+    # JSON-LD "datePublished"
+    if not _page_date:
+        _jld_m = _re.search(r'"datePublished"\s*:\s*"([^"]+)"', html)
+        if _jld_m:
+            _raw = _jld_m.group(1).strip()
+            _iso = _re.match(r"(20\d{2}-\d{2}-\d{2})", _raw)
+            if _iso:
+                _page_date = _iso.group(1)
+    # <meta name="date" content="..."> and <meta name="publish_date" content="...">
+    if not _page_date:
+        _named_m = _re.search(
+            r'<meta\b[^>]*\bname=["\'](?:date|publish[_-]?date|article[_-]?date)["\'][^>]*\bcontent=["\']([^"\']+)["\']',
+            html, _re.I,
+        )
+        if _named_m:
+            _iso = _re.match(r"(20\d{2}-\d{2}-\d{2})", _named_m.group(1).strip())
+            if _iso:
+                _page_date = _iso.group(1)
 
     # Strategy 2: build position-indexed map of <time datetime="..."> dates
     _time_positions: List[tuple] = []
@@ -1002,6 +1331,10 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
                 y, mo = url_date.group(1), url_date.group(2)
                 d = url_date.group(3) or "15"
                 pub_date = f"{y}-{mo}-{d}"
+
+        # Strategy 5: page-level date extracted once from meta/JSON-LD (fallback)
+        if not pub_date and _page_date:
+            pub_date = _page_date
 
         title = raw_text
         if not title or len(title) < 8 or len(title) > 300:
@@ -1153,13 +1486,11 @@ def topic_web_search_node(state: NewsCollectionState) -> NewsCollectionState:
     seen = list(state["seen_keys"])
     errors = list(state["errors"])
 
-    # Build queries: two per topic + one general AI sweep
+    # One query per topic — two was doubling the search time with minimal extra coverage.
     queries: List[str] = []
     for topic in state["topics"]:
         q = _topic_to_search_query(topic)
-        queries.append(f"{q} news {state['date_from']}")
-        queries.append(f"{q} announcement release {state['date_to'][:7]}")
-    queries.append(f"artificial intelligence major announcement {state['date_from']}")
+        queries.append(f"{q} news announcement {state['date_from']} {state['date_to'][:7]}")
 
     try:
         from ddgs import DDGS
@@ -1170,7 +1501,7 @@ def topic_web_search_node(state: NewsCollectionState) -> NewsCollectionState:
     for query in queries:
         try:
             if _use_structured:
-                with DDGS() as ddgs:
+                with DDGS(proxy=None) as ddgs:
                     results = list(ddgs.news(query, max_results=10))
                 items = [
                     {
@@ -1181,7 +1512,8 @@ def topic_web_search_node(state: NewsCollectionState) -> NewsCollectionState:
                         "published_at": r.get("date") or "",
                     }
                     for r in results
-                    if r.get("url") or r.get("link")
+                    if (r.get("url") or r.get("link"))
+                    and not (r.get("url") or r.get("link") or "").startswith(("http://localhost", "http://127."))
                 ]
             else:
                 from langchain_community.tools import DuckDuckGoSearchRun
@@ -1193,7 +1525,7 @@ def topic_web_search_node(state: NewsCollectionState) -> NewsCollectionState:
             added = len(collected) - before
             if added:
                 print(f"[Collection] DDG news/{query[:55]}: {added} new items")
-            time.sleep(1.5)
+            time.sleep(0.5)
         except Exception as exc:
             errors.append(f"ddg_news/{query[:40]}: {exc}")
 
@@ -1219,12 +1551,11 @@ def web_surfer_agent_node(state: NewsCollectionState) -> NewsCollectionState:
     for topic in state["topics"]:
         q = _topic_to_search_query(topic)
         queries = [
-            f"{q} announcement release blog {state['date_from'][:7]}",
-            f"{q} AI research product launch {state['date_to'][:7]}",
+            f"{q} release blog announcement {state['date_from'][:7]} {state['date_to'][:7]}",
         ]
         for query in queries:
             try:
-                with DDGS() as ddgs:
+                with DDGS(proxy=None) as ddgs:
                     results = list(ddgs.text(query, max_results=10))
                 items = [
                     {
@@ -1235,12 +1566,13 @@ def web_surfer_agent_node(state: NewsCollectionState) -> NewsCollectionState:
                         "published_at": "",
                     }
                     for r in results
-                    if r.get("href") or r.get("url")
+                    if (r.get("href") or r.get("url"))
+                    and not (r.get("href") or r.get("url") or "").startswith(("http://localhost", "http://127."))
                 ]
                 before = len(collected)
                 collected, seen = _merge_items(items, collected, seen)
                 print(f"[Collection] web_surfer_ddgs/{query[:50]}: {len(collected) - before} new items")
-                time.sleep(1.5)
+                time.sleep(0.5)
             except Exception as exc:
                 errors.append(f"web_surfer_ddgs/{topic}: {exc}")
 
@@ -1352,40 +1684,92 @@ def gap_fill_node(state: NewsCollectionState) -> NewsCollectionState:
 
 
 def date_validate_node(state: NewsCollectionState) -> NewsCollectionState:
-    """Strictly filter items to the requested date range.
+    """Filter items to the requested date range, with article-level date enrichment.
 
-    - Items with a known date outside the range are removed.
-    - date_to is treated as end-of-day so articles published on that day
-      with a time component (e.g. 15:48:26) are not incorrectly dropped.
-    - Items with no date are kept (flagged with _undated=True).
+    Three-pass approach:
+    1. Classify all items (in-range / out-of-range / undated).
+    2. For undated items, fetch each article page in parallel and apply
+       all web date extraction techniques (_fetch_article_date).
+    3. Re-classify enriched items; truly undated items (no date found
+       even after fetching) are kept — they cannot be confirmed stale.
+
+    date_to is treated as end-of-day so time-stamped articles on that
+    day (e.g. 15:48:26) are not incorrectly dropped.
     """
-    from datetime import timedelta
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     date_from = _parse_date(state["date_from"])
     date_to_dt = _parse_date(state["date_to"])
 
     if not date_from or not date_to_dt:
         return state
 
-    # Extend date_to to end-of-day so time-stamped articles on that day are kept
     date_to_eod = date_to_dt.replace(hour=23, minute=59, second=59)
 
     in_range: List[Dict] = []
-    undated: List[Dict] = []
+    still_undated: List[Dict] = []
     out_of_range = 0
 
+    # Pass 1: classify using existing date fields
     for item in state["collected_items"]:
         pub = item.get("published_at") or item.get("date") or ""
         pub_dt = _parse_date(pub)
         if pub_dt is None:
-            undated.append({**item, "_undated": True})
+            still_undated.append(item)
         elif date_from <= pub_dt <= date_to_eod:
             in_range.append(item)
         else:
             out_of_range += 1
 
+    # Pass 2: fetch article pages for undated items in parallel
+    # Cap at 60 items to avoid excessive network delay; rest are kept as undated
+    MAX_FETCH = 60
+    to_fetch = [
+        item for item in still_undated
+        if (item.get("url") or item.get("link") or "").startswith("http")
+    ][:MAX_FETCH]
+
+    enriched: Dict[str, str] = {}  # url → date string
+    if to_fetch:
+        print(f"[Collection] Fetching dates for {len(to_fetch)} undated items...")
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            futures = {
+                pool.submit(_fetch_article_date, item.get("url") or item.get("link") or ""): item
+                for item in to_fetch
+            }
+            try:
+                for future in as_completed(futures, timeout=45):
+                    item = futures[future]
+                    url = item.get("url") or item.get("link") or ""
+                    try:
+                        date_str = future.result(timeout=1)
+                        if date_str:
+                            enriched[url] = date_str
+                    except Exception:
+                        pass
+            except Exception:
+                pass  # timeout — use whatever enriched so far
+
+    # Pass 3: re-classify enriched items; truly undated items are kept
+    truly_undated: List[Dict] = []
+    for item in still_undated:
+        url = item.get("url") or item.get("link") or ""
+        date_str = enriched.get(url, "")
+        if date_str:
+            pub_dt = _parse_date(date_str)
+            if pub_dt is None:
+                truly_undated.append({**item, "_undated": True})
+            elif date_from <= pub_dt <= date_to_eod:
+                in_range.append({**item, "published_at": date_str})
+            else:
+                out_of_range += 1
+        else:
+            truly_undated.append({**item, "_undated": True})
+
     print(f"[Collection] Date filter: {len(in_range)} in-range, "
-          f"{len(undated)} undated, {out_of_range} removed")
-    return {**state, "collected_items": in_range + undated}
+          f"{len(truly_undated)} undated (kept), {out_of_range} out-of-range removed "
+          f"(enriched {len(enriched)}/{len(to_fetch)} undated items via page fetch)")
+    return {**state, "collected_items": in_range + truly_undated}
 
 
 def semantic_dedup_node(state: NewsCollectionState) -> NewsCollectionState:

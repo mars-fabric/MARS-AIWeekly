@@ -28,12 +28,20 @@ curation_researcher_prompt = (
     "\n"
     "Rules:\n"
     "- ONLY items present in raw data — zero hallucination\n"
-    "- Deduplicate by TOPIC: if multiple articles cover the SAME story/announcement, \n"
-    "  merge them into ONE curated item but list ALL source URLs\n"
+    "- Deduplicate by TOPIC: if multiple articles cover the SAME product/model/announcement, \n"
+    "  merge them into ONE curated item but list ALL source URLs.\n"
+    "  SAME STORY means: same product name, same company, same launch/release — even if one article\n"
+    "  targets developers and another targets general audience, or the titles differ slightly.\n"
+    "  Example: 'Gemini 4 Carbon is now available' and 'Gemini 4 Carbon is now available for developers'\n"
+    "  are the SAME story — merge into one item with both URLs.\n"
     "- Each item: title, organization, date (YYYY-MM-DD), ALL source URLs, 2-3 sentence summary\n"
     "- Remove items with ZERO connection to AI — e.g. sports, cooking, pure finance with no AI angle\n"
     "- Keep hardware, chips, infrastructure, and investment items if they are from an AI company blog or directly enable AI (GPUs, AI factories, AI cloud, model releases, etc.)\n"
-    "- Remove items outside date range, items without real URLs\n"
+    "- STRICT DATE RULE: Remove items outside the date range {date_from} to {date_to}.\n"
+    "  Items marked DATE_UNVERIFIED have no confirmed publication date — EXCLUDE them\n"
+    "  unless their URL or title contains a year/month that falls within the report period.\n"
+    "  When in doubt, exclude. A stale item is worse than a missing item.\n"
+    "- Remove items without real URLs\n"
     "- Sort newest first; keep diverse orgs\n"
     "\n"
     "URL PRIORITY — when listing Sources for a story, always place official company/org URLs FIRST:\n"
@@ -130,9 +138,12 @@ review_critic_prompt = (
     "4. Org/topic balance\n"
     "5. Structure — all 5 sections present (incl. References)?\n"
     "6. Title-only entries needing {word_rule}\n"
-    "7. Duplicates, placeholders, unsupported superlatives\n"
+    "7. Duplicates — flag any two items about the same product/model/announcement even if titles differ\n"
+    "   (e.g. 'ModelX available' and 'ModelX available for developers' = duplicate; keep one merged item)\n"
     "8. Quick Reference Table — Link column must be [Link](url), NOT plain text 'Link'\n"
     "9. References section — must be a table with clickable URLs, listing all cited sources\n"
+    "10. TECHNICAL style only — flag any item whose description is theory/marketing without "
+    "concrete numbers (version, benchmark score, latency, parameter count, tokens/sec, etc.)\n"
     "\n"
     "Format: 1. [TAG] description ... End with: **TOTAL: X corrections**"
     + _OUTPUT_RULES +
@@ -207,6 +218,35 @@ merge_partials_prompt = (
     "---\n"
     "Partial Reports:\n"
     "{partial_reports}\n"
+)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Curation merge prompt — consolidates partial curation chunks
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Stage 3.5 — Coverage Check  (researcher finds items missing from draft)
+# ═══════════════════════════════════════════════════════════════════════════
+
+coverage_check_prompt = (
+    "Compare the DRAFT REPORT against the CURATED ITEMS below.\n"
+    "List every curated item that is NOT mentioned or covered in the draft.\n"
+    "An item is 'covered' if its title or key fact appears anywhere in the draft.\n"
+    "\n"
+    "**Date range:** {date_from} to {date_to}\n"
+    "\n"
+    "Output — one bullet per missing item, using data from the curated list:\n"
+    "- **[Title]** | [Org] | [Date] — [one-line summary] — Sources: [URL]\n"
+    "\n"
+    "If ALL curated items are covered, output exactly: **No gaps — all items covered.**\n"
+    "Do NOT add commentary, preamble, or item counts. Only list genuinely absent items."
+    + _OUTPUT_RULES +
+    "---\n"
+    "CURATED ITEMS:\n"
+    "{curated_items}\n"
+    "\n---\n"
+    "DRAFT REPORT:\n"
+    "{draft_report}\n"
 )
 
 # ═══════════════════════════════════════════════════════════════════════════

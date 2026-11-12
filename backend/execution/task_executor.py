@@ -768,161 +768,15 @@ async def execute_cmbagent_task(
                         callbacks=workflow_callbacks,
                     )
                 elif mode == "hitl-interactive":
-                    # HITL Interactive mode - full human-in-the-loop workflow
-                    from cmbagent.workflows import hitl_workflow
-                    from cmbagent.database.websocket_approval_manager import WebSocketApprovalManager
-
-                    # Get HITL-specific config
-                    hitl_variant = config.get("hitlVariant", "full_interactive")
-                    max_human_iterations = config.get("maxHumanIterations", 3)
-                    approval_mode = config.get("approvalMode", "both")
-                    allow_plan_modification = config.get("allowPlanModification", True)
-                    allow_step_skip = config.get("allowStepSkip", True)
-                    allow_step_retry = config.get("allowStepRetry", True)
-                    show_step_context = config.get("showStepContext", True)
-
-                    # Create WebSocket-based approval manager for UI interaction
-                    hitl_approval_manager = WebSocketApprovalManager(ws_send_event, task_id, db_factory=_approval_db_factory)
-                    logger.info("HITL workflow variant: %s", hitl_variant)
-
-                    # Select workflow based on variant
-                    if hitl_variant == "planning_only":
-                        results = hitl_workflow.hitl_planning_only_workflow(
-                            task=task,
-                            max_rounds_planning=50,
-                            max_rounds_control=max_rounds,
-                            max_plan_steps=max_plan_steps,
-                            max_human_iterations=max_human_iterations,
-                            n_plan_reviews=n_plan_reviews,
-                            allow_plan_modification=allow_plan_modification,
-                            planner_model=planner_model,
-                            engineer_model=engineer_model,
-                            researcher_model=researcher_model,
-                            work_dir=task_work_dir,
-                            api_keys=api_keys,
-                            clear_work_dir=False,
-                            default_formatter_model=default_formatter_model,
-                            default_llm_model=default_llm_model,
-                            callbacks=workflow_callbacks,
-                            approval_manager=hitl_approval_manager,
-                        )
-                    elif hitl_variant == "error_recovery":
-                        results = hitl_workflow.hitl_error_recovery_workflow(
-                            task=task,
-                            max_rounds_planning=50,
-                            max_rounds_control=max_rounds,
-                            max_plan_steps=max_plan_steps,
-                            n_plan_reviews=n_plan_reviews,
-                            max_n_attempts=max_attempts,
-                            allow_step_retry=allow_step_retry,
-                            allow_step_skip=allow_step_skip,
-                            planner_model=planner_model,
-                            plan_reviewer_model=plan_reviewer_model,
-                            engineer_model=engineer_model,
-                            researcher_model=researcher_model,
-                            work_dir=task_work_dir,
-                            api_keys=api_keys,
-                            clear_work_dir=False,
-                            default_formatter_model=default_formatter_model,
-                            default_llm_model=default_llm_model,
-                            callbacks=workflow_callbacks,
-                            approval_manager=hitl_approval_manager,
-                        )
-                    else:  # full_interactive (default)
-                        results = hitl_workflow.hitl_interactive_workflow(
-                            task=task,
-                            max_rounds_control=max_rounds,
-                            max_n_attempts=max_attempts,
-                            max_plan_steps=max_plan_steps,
-                            max_human_iterations=max_human_iterations,
-                            n_plan_reviews=n_plan_reviews,
-                            approval_mode=approval_mode,
-                            allow_plan_modification=allow_plan_modification,
-                            allow_step_skip=allow_step_skip,
-                            allow_step_retry=allow_step_retry,
-                            show_step_context=show_step_context,
-                            planner_model=planner_model,
-                            engineer_model=engineer_model,
-                            researcher_model=researcher_model,
-                            work_dir=task_work_dir,
-                            api_keys=api_keys,
-                            clear_work_dir=False,
-                            default_formatter_model=default_formatter_model,
-                            default_llm_model=default_llm_model,
-                            callbacks=workflow_callbacks,
-                            approval_manager=hitl_approval_manager,
-                        )
+                    raise RuntimeError(
+                        "hitl-interactive mode is not available in mars-cmbagent >= 2.0. "
+                        "The hitl_workflow module was removed in this version."
+                    )
                 elif mode == "copilot":
-                    # Copilot mode - flexible assistant that adapts to task complexity
-                    from cmbagent.workflows.copilot import copilot, continue_copilot_sync
-                    from cmbagent.database.websocket_approval_manager import WebSocketApprovalManager
-
-                    # Check if this is a continuation of an existing session
-                    existing_session_id = config.get("copilotSessionId")
-                    
-                    if existing_session_id:
-                        # Continue existing session
-                        logger.info("Continuing copilot session: %s", existing_session_id)
-                        copilot_approval_manager = WebSocketApprovalManager(ws_send_event, task_id, db_factory=_approval_db_factory)
-                        
-                        try:
-                            results = continue_copilot_sync(
-                                session_id=existing_session_id,
-                                additional_context=task,
-                                approval_manager=copilot_approval_manager,
-                            )
-                        except Exception as e:
-                            logger.warning("Session continuation failed: %s, starting new session", e)
-                            existing_session_id = None  # Fall through to new session
-
-                    if not existing_session_id:
-                        # Get copilot-specific config
-                        available_agents = config.get("availableAgents", ["engineer", "researcher"])
-                        enable_planning = config.get("enablePlanning", True)
-                        use_dynamic_routing = config.get("useDynamicRouting", True)
-                        complexity_threshold = config.get("complexityThreshold", 50)
-                        continuous_mode = config.get("continuousMode", False)
-                        copilot_approval_mode = config.get("approvalMode", "after_step")
-                        conversational = config.get("conversational", False) or copilot_approval_mode == "conversational"
-                        control_model = config.get("controlModel", planner_model)  # Use planner model as default
-                        tool_approval = config.get("toolApproval", "none")  # "prompt" | "auto_allow_all" | "none"
-                        intelligent_routing = config.get("intelligentRouting", "balanced")  # "aggressive" | "balanced" | "minimal"
-
-                        # Create WebSocket-based approval manager for HITL interactions
-                        copilot_approval_manager = WebSocketApprovalManager(ws_send_event, task_id, db_factory=_approval_db_factory)
-                        logger.info("Copilot config: agents=%s, planning=%s, dynamic_routing=%s, continuous=%s, tool_approval=%s",
-                                    available_agents, enable_planning, use_dynamic_routing, continuous_mode, tool_approval)
-
-                        # Run copilot workflow (synchronous - runs in ThreadPoolExecutor)
-                        results = copilot(
-                            task=task,
-                            available_agents=available_agents,
-                            engineer_model=engineer_model,
-                            researcher_model=researcher_model,
-                            planner_model=planner_model,
-                            control_model=control_model,
-                            enable_planning=enable_planning,
-                            use_dynamic_routing=use_dynamic_routing,
-                            complexity_threshold=complexity_threshold,
-                            continuous_mode=continuous_mode,
-                            max_turns=config.get("maxTurns", 20),
-                            max_rounds=max_rounds,
-                            max_plan_steps=max_plan_steps,
-                            max_n_attempts=max_attempts,
-                            approval_mode=copilot_approval_mode,
-                            conversational=conversational,
-                            tool_approval=tool_approval,
-                            intelligent_routing=intelligent_routing,
-                            auto_approve_simple=config.get("autoApproveSimple", True),
-                            engineer_instructions=config.get("engineerInstructions", ""),
-                            researcher_instructions=config.get("researcherInstructions", ""),
-                            planner_instructions=plan_instructions,
-                            work_dir=task_work_dir,
-                            api_keys=api_keys,
-                            clear_work_dir=False,
-                            callbacks=workflow_callbacks,
-                            approval_manager=copilot_approval_manager,
-                        )
+                    raise RuntimeError(
+                        "copilot mode is not available in mars-cmbagent >= 2.0. "
+                        "The cmbagent.workflows.copilot module was removed in this version."
+                    )
                 elif mode == "idea-generation":
                     # Always using phase-based workflow
                     logger.info("Using phase-based workflow for idea-generation")
@@ -992,44 +846,15 @@ async def execute_cmbagent_task(
                         callbacks=workflow_callbacks,
                     )
                 elif mode == "deep-research-extended":
-                    from cmbagent.workflows.composer import get_workflow, WorkflowExecutor
-
-                    workflow_def = get_workflow("deep_research_extended")
-                    executor = WorkflowExecutor(
-                        workflow=workflow_def,
-                        task=task,
-                        work_dir=task_work_dir,
-                        api_keys=api_keys,
-                        callbacks=workflow_callbacks,
+                    raise RuntimeError(
+                        "deep-research-extended mode is not available in mars-cmbagent >= 2.0. "
+                        "The cmbagent.workflows.composer module was removed in this version."
                     )
-                    wf_context = executor.run_sync()
-                    results = {
-                        "chat_history": [],
-                        "final_context": wf_context.shared_state,
-                        "run_id": wf_context.run_id,
-                        "total_time": wf_context.phase_timings.get("total", 0),
-                    }
-                    for r in executor.results:
-                        results["chat_history"].extend(r.chat_history)
                 elif mode == "deepresearch-research":
-                    from cmbagent.workflows.composer import DEEPRESEARCH_WORKFLOW, WorkflowExecutor
-
-                    executor = WorkflowExecutor(
-                        workflow=DEEPRESEARCH_WORKFLOW,
-                        task=task,
-                        work_dir=task_work_dir,
-                        api_keys=api_keys,
-                        callbacks=workflow_callbacks,
+                    raise RuntimeError(
+                        "deepresearch-research mode is not available in mars-cmbagent >= 2.0. "
+                        "The cmbagent.workflows.composer module was removed in this version."
                     )
-                    wf_context = executor.run_sync()
-                    results = {
-                        "chat_history": [],
-                        "final_context": wf_context.shared_state,
-                        "run_id": wf_context.run_id,
-                        "total_time": wf_context.phase_timings.get("total", 0),
-                    }
-                    for r in executor.results:
-                        results["chat_history"].extend(r.chat_history)
                 else:
                     # One Shot mode
                     results = cmbagent.one_shot(

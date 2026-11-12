@@ -22,6 +22,7 @@ const AVAILABLE_TOPICS = [
 ]
 
 const AVAILABLE_SOURCES = [
+    { id: 'official-websites', label: 'Official Websites' },
     { id: 'github', label: 'GitHub Releases' },
     { id: 'press-releases', label: 'Press Releases' },
     { id: 'company-announcements', label: 'Company Announcements' },
@@ -33,7 +34,7 @@ export default function AIWeeklySetupPanel({ hook, onNext }: AIWeeklySetupPanelP
     const { availableModels } = useModelConfig()
 
     const [dateFrom, setDateFrom] = useState(() => {
-        const d = new Date(); d.setDate(d.getDate() - 7)
+        const d = new Date(); d.setDate(d.getDate() - 6)
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
     })
     const [dateTo, setDateTo] = useState(() => {
@@ -41,7 +42,7 @@ export default function AIWeeklySetupPanel({ hook, onNext }: AIWeeklySetupPanelP
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
     })
     const [topics, setTopics] = useState<string[]>(AVAILABLE_TOPICS.map(t => t.id))
-    const [sources, setSources] = useState<string[]>([])
+    const [sources, setSources] = useState<string[]>(['official-websites'])
     const [style, setStyle] = useState<'concise' | 'detailed' | 'technical'>('concise')
     const [customSources, setCustomSources] = useState('')
     const [submitted, setSubmitted] = useState(false)
@@ -98,6 +99,15 @@ export default function AIWeeklySetupPanel({ hook, onNext }: AIWeeklySetupPanelP
                         className="rounded-mars-md border px-3 py-2 text-sm outline-none"
                         style={{ backgroundColor: 'var(--mars-color-surface)', borderColor: 'var(--mars-color-border)', color: 'var(--mars-color-text)' }}
                     />
+                    {dateFrom && dateTo && dateFrom <= dateTo && (() => {
+                        const days = Math.round((new Date(dateTo).getTime() - new Date(dateFrom).getTime()) / 86400000) + 1
+                        return (
+                            <span className="text-xs font-semibold px-2.5 py-1 rounded-mars-sm"
+                                style={{ backgroundColor: 'var(--mars-color-primary)', color: 'white', opacity: 0.85 }}>
+                                {days} day{days !== 1 ? 's' : ''}
+                            </span>
+                        )
+                    })()}
                 </div>
             </div>
 
@@ -153,9 +163,14 @@ export default function AIWeeklySetupPanel({ hook, onNext }: AIWeeklySetupPanelP
                     {([
                         { id: 'concise' as const, label: 'Concise', tooltip: 'Short & direct — 2-3 sentences per item (≤80 words). News-wire style with key facts only.' },
                         { id: 'detailed' as const, label: 'Detailed', tooltip: 'Comprehensive — ≥130 words per item with business context, market impact, and strategic recommendations.' },
-                        { id: 'technical' as const, label: 'Technical', tooltip: 'Deep-dive — ≥130 words per item with architecture details, metrics, benchmarks, and technical trade-offs.' },
+                        { id: 'technical' as const, label: 'Technical', tooltip: 'Engineering-first — exact version numbers, benchmark scores, latency/throughput, architecture data-flows, breaking changes, API diffs. GitHub Releases auto-selected. No theory or business analysis.' },
                     ]).map(s => (
-                        <button key={s.id} className={chipClass(style === s.id)} onClick={() => setStyle(s.id)} title={s.tooltip}>
+                        <button key={s.id} className={chipClass(style === s.id)} onClick={() => {
+                            setStyle(s.id)
+                            if (s.id === 'technical') {
+                                setSources(prev => prev.includes('github') ? prev : [...prev, 'github'])
+                            }
+                        }} title={s.tooltip}>
                             {s.label}
                         </button>
                     ))}
@@ -182,7 +197,7 @@ export default function AIWeeklySetupPanel({ hook, onNext }: AIWeeklySetupPanelP
                         Model Settings
                     </span>
                     <span className="text-xs" style={{ color: 'var(--mars-color-text-secondary)' }}>
-                        {stageConfig.model || 'gpt-4o (default)'}
+                        {stageConfig.model || 'Auto (best per stage)'}
                     </span>
                 </button>
                 {showModelSettings && (
@@ -200,7 +215,7 @@ export default function AIWeeklySetupPanel({ hook, onNext }: AIWeeklySetupPanelP
                                 className="w-full rounded-mars-sm border px-2 py-1.5 text-sm outline-none"
                                 style={{ backgroundColor: 'var(--mars-color-surface)', borderColor: 'var(--mars-color-border)', color: 'var(--mars-color-text)' }}
                             >
-                                <option value="">Default (gpt-4o)</option>
+                                <option value="">Auto (gpt-4o-mini for curation, gpt-4o for writing+review)</option>
                                 {availableModels.map(m => (
                                     <option key={m.value} value={m.value}>{m.label}</option>
                                 ))}

@@ -33,12 +33,12 @@ def _get_stage_defaults(stage_num: int) -> dict:
         from cmbagent.config.model_registry import get_model_registry
         return get_model_registry().get_stage_defaults("aiweekly", stage_num)
     except (ImportError, Exception):
-        # Standalone fallback
-        return {
-            "researcher_model": "gpt-4o",
-            "orchestration_model": "gpt-4o-mini",
-            "formatter_model": "gpt-4o-mini",
-        }
+        # Standalone fallback — mirrors model_config.yaml per-stage assignments
+        fast = "gpt-4o-mini"
+        best = "gpt-4o"
+        if stage_num == 2:
+            return {"researcher_model": fast, "orchestration_model": fast, "formatter_model": fast}
+        return {"researcher_model": best, "orchestration_model": fast, "formatter_model": fast}
 
 
 def _build_model_kwargs(stage_num: int, config_overrides: dict | None = None) -> dict:
@@ -55,10 +55,10 @@ def _build_model_kwargs(stage_num: int, config_overrides: dict | None = None) ->
         overrides.setdefault(f"{agent}_model", overrides.pop("model"))
 
     cfg = {**_get_stage_defaults(stage_num), **overrides}
+    # default_formatter_model is in one_shot()'s signature but _one_shot_impl() rejects it
     return dict(
         researcher_model=cfg["researcher_model"],
         default_llm_model=cfg.get("orchestration_model", "gpt-4o-mini"),
-        default_formatter_model=cfg.get("formatter_model", "gpt-4o-mini"),
     )
 
 
@@ -74,8 +74,17 @@ _STYLE_RULES = {
         "competitive context, business implications, and why it matters strategically."
     ),
     "technical": (
-        "STYLE: TECHNICAL — Each item description must be ≥130 words with concrete metrics, "
-        "implementation details, architecture specifics, and technical depth."
+        "STYLE: TECHNICAL — Each item description must be ≥130 words. "
+        "Prioritize FACTS over theory: exact version numbers, benchmark scores, latency/throughput numbers, "
+        "parameter counts, context window sizes, token limits, pricing changes in API calls. "
+        "For code/library releases: list changed functions, new endpoints, removed parameters, "
+        "migration steps, breaking changes with before/after examples. "
+        "For model releases: cover architecture changes (layers, attention heads, training tokens, "
+        "FLOPS), benchmark results (MMLU, HumanEval, MATH, etc. with exact scores), "
+        "inference specs (tokens/sec, VRAM requirements), quantization options. "
+        "For infrastructure/systems: describe the architecture as a numbered step-by-step data flow, "
+        "component names, protocols, throughput metrics, SLA numbers. "
+        "ZERO theory, ZERO business analysis, ZERO market commentary — numbers and architecture only."
     ),
 }
 
@@ -94,10 +103,14 @@ def get_expand_instruction(style: str) -> tuple:
         )
     elif style == "technical":
         return (
-            "EXPAND each title into a substantial technical paragraph (≥130 words) "
-            "with concrete metrics, architecture details, and technical depth "
-            "using the curated source data below.",
-            "a substantive description (≥130 words)",
+            "EXPAND each title into a technical facts-first paragraph (≥130 words). "
+            "Lead with exact numbers: version, benchmark scores (MMLU/HumanEval/MATH with percentages), "
+            "latency ms, throughput tokens/sec, context window, VRAM, parameter count, training tokens. "
+            "For code releases: list changed/removed functions, new endpoints, breaking changes with "
+            "before→after, migration steps. "
+            "For architecture: numbered data-flow steps, component names, protocols, SLA metrics. "
+            "ZERO theory, ZERO business commentary — only measurable facts from the source data.",
+            "a technical facts paragraph (≥130 words, numbers and architecture — no theory)",
         )
     else:  # detailed
         return (
@@ -698,6 +711,8 @@ def run_data_collection(
         url = item.get("url", "")
         source = item.get("source", "unknown")
         pub = (item.get("published_at") or item.get("date") or "")[:10]
+        if not pub and item.get("_undated"):
+            pub = "DATE_UNVERIFIED"
         desc = (item.get("summary") or "").strip()
         summary_lines.append(f"- **{title}** | {source} | {pub}")
         if desc:
@@ -1043,8 +1058,14 @@ def build_review_critique_kwargs(
     api_keys: dict | None = None,
     config_overrides: dict | None = None,
     callbacks=None,
+    missing_items: str | None = None,
 ) -> dict:
-    """Build kwargs for one_shot() — Stage 4 Pass A: critical audit."""
+    """Build kwargs for one_shot() — Stage 4 Pass A: critical audit.
+
+    missing_items: output of the Stage 3.5 coverage check — items absent from
+    the draft. When present, prepended to the critic prompt so they are
+    guaranteed to surface as corrections.
+    """
     from backend.task_framework.prompts.aiweekly.stages import (
         review_critic_prompt,
     )
@@ -1100,6 +1121,14 @@ def build_review_critique_kwargs(
             word_rule=word_rule,
             draft_report=draft_report,
             curated_items=compact_curated,
+        )
+
+    if missing_items:
+        task = (
+            "PRIORITY — Coverage check identified these curated items as ABSENT from the draft. "
+            "They MUST each appear as a numbered correction:\n"
+            f"{missing_items}\n\n"
+            + task
         )
 
     return dict(
@@ -1220,6 +1249,231 @@ def build_review_output(
         "artifacts": artifacts,
         "chat_history": chat_history,
     }
+
+
+# ─── Stage 3.5 — Coverage check (researcher) ────────────────────────────
+
+def extract_coverage_gaps(results: dict) -> str:
+    """Return missing-items markdown from coverage check, or '' if no gaps."""
+    try:
+        output = extract_stage_result(results)
+        if re.search(r"no gaps|all items covered", output, re.IGNORECASE):
+            return ""
+        return output.strip()
+    except Exception:
+        return ""
+
+
+def build_coverage_check_kwargs(
+    draft_report: str,
+    curated_items: str,
+    date_from: str,
+    date_to: str,
+    work_dir: str,
+    api_keys: dict | None = None,
+    config_overrides: dict | None = None,
+    callbacks=None,
+) -> dict:
+    """Build kwargs for one_shot(researcher) — Stage 3.5 coverage check.
+
+    Finds curated items absent from the draft report so they can be forced
+    into the Stage 4 critic prompt.
+    """
+    from backend.task_framework.prompts.aiweekly.stages import coverage_check_prompt
+
+    sub_dir = create_work_dir(work_dir, "coverage_check")
+    compact_curated = _compact_curated_for_review(curated_items)
+
+    task = coverage_check_prompt.format(
+        date_from=date_from,
+        date_to=date_to,
+        curated_items=compact_curated,
+        draft_report=draft_report,
+    )
+
+    return dict(
+        task=task,
+        agent="researcher",
+        max_rounds=5,
+        max_n_attempts=1,
+        **_build_model_kwargs(4, config_overrides),
+        work_dir=str(sub_dir),
+        api_keys=api_keys,
+        clear_work_dir=False,
+        callbacks=callbacks,
+    )
+
+
+# ─── Stage 1.5 — Summarizer enrichment ──────────────────────────────────
+
+def _parse_collection_items(raw_md: str) -> list[dict]:
+    """Parse individual items from raw_collection markdown.
+
+    Each item starts with '- **' and runs until the next such line.
+    Returns list of dicts with keys: title_key, title_line, text.
+    """
+    lines = raw_md.splitlines()
+    items: list[dict] = []
+    current_lines: list[str] = []
+    current_title_line = ""
+
+    def _flush():
+        if current_lines and current_title_line:
+            text = "\n".join(current_lines)
+            title_key = re.sub(r'\*\*', '', current_title_line)
+            title_key = title_key.split('|')[0].strip().lower()
+            items.append({
+                "title_key": title_key,
+                "title_line": current_title_line,
+                "text": text,
+            })
+
+    for line in lines:
+        if line.strip().startswith("- **"):
+            _flush()
+            current_lines = [line]
+            current_title_line = line.strip()
+        elif current_lines:
+            current_lines.append(line)
+    _flush()
+    return items
+
+
+def _inject_enrichments(raw_md: str, enrichments: dict[str, str]) -> str:
+    """Inject structured key findings inline — inserted before each item's Sources line."""
+    lines = raw_md.splitlines()
+    result: list[str] = []
+    current_key: str | None = None
+    injected = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        if stripped.startswith("- **"):
+            current_key = None
+            injected = False
+            title_key = re.sub(r'\*\*', '', stripped).split('|')[0].strip().lower()
+            if title_key in enrichments:
+                current_key = title_key
+
+        # Inject key findings BEFORE the Sources line so it stays within the item block
+        if current_key and not injected and re.match(r'Sources?:', stripped):
+            result.append(f"  [Key Findings: {enrichments[current_key]}]")
+            injected = True
+
+        result.append(line)
+
+    return "\n".join(result)
+
+
+def _extract_agent_output(results: dict, agent_name: str) -> str:
+    """Extract the first non-empty message from a specific agent in chat history."""
+    for msg in reversed(results.get("chat_history", [])):
+        if msg.get("name") == agent_name:
+            content = msg.get("content", "").strip()
+            if content:
+                return content
+    # Broad fallback: longest message
+    best = max(
+        (msg.get("content", "") for msg in results.get("chat_history", [])),
+        key=len, default="",
+    )
+    return best.strip()
+
+
+def _parse_summarizer_key_findings(raw_output: str) -> str:
+    """Extract abstract + key findings from summarizer structured output as a compact string."""
+    findings_m = re.search(
+        r'[-–•]\s*key findings?[:\s]+(.*?)(?=\n[-–•]\s|\Z)',
+        raw_output, re.IGNORECASE | re.DOTALL,
+    )
+    abstract_m = re.search(
+        r'[-–•]\s*abstract[:\s]+(.*?)(?=\n[-–•]\s|\Z)',
+        raw_output, re.IGNORECASE | re.DOTALL,
+    )
+    software_m = re.search(
+        r'[-–•]\s*scientific software[:\s]+(.*?)(?=\n[-–•]\s|\Z)',
+        raw_output, re.IGNORECASE | re.DOTALL,
+    )
+
+    parts: list[str] = []
+    if abstract_m:
+        parts.append(abstract_m.group(1).strip().replace("\n", " "))
+    if findings_m:
+        # Compress multi-line findings into semicolon-separated list
+        raw = findings_m.group(1).strip()
+        bullets = [ln.lstrip("-•* ").strip() for ln in raw.splitlines() if ln.strip()]
+        if bullets:
+            parts.append("Findings: " + "; ".join(bullets))
+    if software_m:
+        sw = software_m.group(1).strip().replace("\n", " ")
+        if sw.lower() not in ("n/a", "none", ""):
+            parts.append("Tools: " + sw)
+
+    return " | ".join(parts) if parts else ""
+
+
+def enrich_top_items_with_summarizer(
+    raw_collection: str,
+    work_dir: str,
+    api_keys: dict | None = None,
+    config_overrides: dict | None = None,
+    callbacks=None,
+    max_items: int = 12,
+) -> str:
+    """Run the summarizer agent on the top-N longest items in raw_collection.
+
+    Longer items have more scraped content — better input for the summarizer.
+    Extracted abstract + key findings are injected inline before each item's
+    Sources line so Stage 2 curation sees structured, grounded context.
+    Capped at max_items to keep LLM costs predictable.
+    Returns the enriched raw_collection (original if enrichment fails entirely).
+    """
+    import cmbagent
+
+    items = _parse_collection_items(raw_collection)
+    if not items:
+        return raw_collection
+
+    # Sort by text length descending; cap at max_items
+    candidates = sorted(items, key=lambda x: len(x["text"]), reverse=True)[:max_items]
+    logger.info(
+        "[Stage 1.5] Enriching %d/%d items with summarizer agent",
+        len(candidates), len(items),
+    )
+
+    sub_dir = create_work_dir(work_dir, "summarizer_enrichment")
+    orchestration_model = (config_overrides or {}).get("orchestration_model", "gpt-4o-mini")
+
+    enrichments: dict[str, str] = {}
+    for item in candidates:
+        try:
+            result = cmbagent.one_shot(
+                task=item["text"],
+                agent="summarizer",
+                max_rounds=5,
+                max_n_attempts=1,
+                default_llm_model=orchestration_model,
+                default_formatter_model=orchestration_model,
+                work_dir=str(sub_dir),
+                api_keys=api_keys,
+                clear_work_dir=False,
+                callbacks=callbacks,
+            )
+            raw_output = _extract_agent_output(result, "summarizer")
+            enrichment = _parse_summarizer_key_findings(raw_output)
+            if enrichment:
+                enrichments[item["title_key"]] = enrichment
+                logger.info("[Stage 1.5] Enriched: %.60s", item["title_key"])
+        except Exception as exc:
+            logger.warning("[Stage 1.5] Summarizer failed for '%.60s': %s", item["title_key"], exc)
+
+    if not enrichments:
+        logger.info("[Stage 1.5] No enrichments produced — returning original collection")
+        return raw_collection
+
+    logger.info("[Stage 1.5] Injecting %d enrichments into collection", len(enrichments))
+    return _inject_enrichments(raw_collection, enrichments)
 
 
 # ─── Programmatic verification (post-LLM) ───────────────────────────────
