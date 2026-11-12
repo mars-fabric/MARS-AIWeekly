@@ -15,22 +15,34 @@ Generates publication-ready AI news reports through a 4-stage pipeline:
 - Node.js 18+
 
 ### Development
-git clone https://github.com/mars-fabric/MARS-AIWeekly.git
-cd MARS-AIWeekly/
+
 ```bash
+git clone https://github.com/mars-fabric/MARS-AIWeekly.git
+
+cd MARS-AIWeekly/
+
 cp .env.example .env  # fill in API keys
+
 python -m venv .venv && source .venv/bin/activate
+
 pip install -r Requirements.txt 
 
 # Start backend (port 8000)
 cd backend/
+
 python run.py
 
 # In another terminal ( project root) — install and start frontend (port 3022)
 cd mars-ui/
+
 cp .env.local.example .env.local
+
 npm install
+
 npm run dev
+
+Open http://localhost:3022
+
 ```
 
 ### Docker
@@ -38,8 +50,6 @@ npm run dev
 ```bash
 docker compose up
 ```
-
-Open http://localhost:3022
 
 ## Environment Variables
 

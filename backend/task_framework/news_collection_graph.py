@@ -187,9 +187,19 @@ if _news_tools is not None:
 # Kept small and stable — these are the companies whose blogs reliably publish
 # AI news worth including regardless of topic.
 _CORE_AI_COMPANIES: List[str] = [
+    # ── Core AI labs & model providers ───────────────────────────────────────
     "openai", "anthropic", "google", "meta", "microsoft",
     "nvidia", "huggingface", "amazon", "deepmind", "apple",
     "ibm", "mistral", "xai", "deepseek", "cohere", "perplexity",
+    # ── Quantum computing ────────────────────────────────────────────────────
+    "google_quantum",   # quantumai.google — Google Quantum AI blog
+    "quantinuum",       # quantinuum.com/news — Honeywell-Cambridge spin-off
+    "ionq",             # ionq.com/news — public quantum company
+    # ── Robotics ─────────────────────────────────────────────────────────────
+    "bostondynamics",   # bostondynamics.com/blog
+    "figure",           # figure.ai/blog — humanoid robots
+    "agilityrobotics",  # agilityrobotics.com/news
+    "1x",               # 1x.tech/blog — humanoid robots (NEO)
 ]
 
 # Supplementary blog/news sources NOT already covered by cmbagent.external_tools.news_tools.
@@ -207,10 +217,6 @@ _SUPPLEMENTARY_RSS_SOURCES: List[str] = [
     "https://blog.google/",
     "https://blog.google/innovation-and-ai/",
 
-    # ── Microsoft: Azure blog RSS (the /content-type/announcements/ path is a Next.js SPA
-    # that returns zero scrape-able links; use the RSS feed directly instead) ────────────
-    "https://azure.microsoft.com/en-us/blog/feed/",
-
     # ── NVIDIA tag feeds (cmbagent has main blogs.nvidia.com/feed/ only) ─────────────
     "https://blogs.nvidia.com/blog/tag/agentic-ai/",
     "https://blogs.nvidia.com/blog/tag/inference/",
@@ -220,10 +226,10 @@ _SUPPLEMENTARY_RSS_SOURCES: List[str] = [
 
     # ── Companies not in cmbagent at all ─────────────────────────────────────────────
     "https://cohere.com/blog",
-    "https://www.perplexity.ai/hub/blog",
     "https://mistral.ai/news",
     # x.ai/blog → 403 (blocks all bots); xAI covered via web-search in company_scrape
     "https://www.deepseek.com/news",
+    # perplexity.ai/hub/blog → 403 (blocks all bots)
 ]
 
 # Extend cmbagent's maps with companies it doesn't track, and correct stale feeds.
@@ -231,13 +237,20 @@ _SUPPLEMENTARY_RSS_SOURCES: List[str] = [
 if _news_tools is not None:
     # Add companies missing from cmbagent's _OFFICIAL_NEWS_PAGES
     _news_tools._OFFICIAL_NEWS_PAGES.update({
-        "cohere":     ["https://cohere.com/blog"],
-        "perplexity": ["https://www.perplexity.ai/hub/blog"],
-        "mistral":    ["https://mistral.ai/news", "https://mistral.ai/research"],
-        "xai":        ["https://x.ai/blog"],           # 403 for direct scrape; web-search fallback works
-        "deepseek":   ["https://www.deepseek.com/news"],
+        "cohere":          ["https://cohere.com/blog"],
+        "mistral":         ["https://mistral.ai/news", "https://mistral.ai/research"],
+        "xai":             ["https://x.ai/blog"],       # 403 for direct scrape; web-search fallback works
+        "deepseek":        ["https://www.deepseek.com/news"],
+        # perplexity.ai/hub/blog → 403 for all bots; skip direct scrape
+        # ── Robotics companies not in cmbagent ───────────────────────────────
+        "figure":          ["https://www.figure.ai/blog"],
+        "agilityrobotics": ["https://agilityrobotics.com/news"],
+        "1x":              ["https://www.1x.tech/blog"],
+        # ── Quantum companies not in cmbagent ────────────────────────────────
+        "ionq":            ["https://ionq.com/news", "https://ionq.com/blog"],
     })
-    for _co in ("cohere", "perplexity", "mistral", "xai", "deepseek"):
+    for _co in ("cohere", "mistral", "xai", "deepseek", "perplexity",
+                 "figure", "agilityrobotics", "1x", "ionq"):
         _news_tools._COMPANY_RSS_FEEDS.setdefault(_co, [])
 
     # Override dead/blocked cmbagent RSS feeds with verified-live alternatives.
@@ -246,9 +259,11 @@ if _news_tools is not None:
         "https://blog.google/technology/ai/rss/",
         "https://research.google/blog/rss/",
     ]
-    # microsoft: blogs.microsoft.com/feed/ and research/feed/ → both 403
+    # microsoft: keep all three live feeds (azure blog + main blog + research)
     _news_tools._COMPANY_RSS_FEEDS["microsoft"] = [
         "https://azure.microsoft.com/en-us/blog/feed/",
+        "https://blogs.microsoft.com/feed/",
+        "https://www.microsoft.com/en-us/research/feed/",
     ]
     # meta: ai.meta.com/blog/rss/ → 404; engineering.fb.com/feed/ still live
     _news_tools._COMPANY_RSS_FEEDS["meta"] = [
@@ -267,10 +282,21 @@ if _news_tools is not None:
     ]
     # oracle: both feeds → 403 blocked
     _news_tools._COMPANY_RSS_FEEDS["oracle"] = []
-    # bostondynamics: blog/feed → 404; no working alternative found
+    # bostondynamics: blog/feed → 404; rely on web-search fallback in scrape_official_news_pages
     _news_tools._COMPANY_RSS_FEEDS["bostondynamics"] = []
-    # anthropic: rss/news → 404; web-search fallback works better
+    # ionq: official RSS feed
+    _news_tools._COMPANY_RSS_FEEDS["ionq"] = ["https://ionq.com/feed"]
+    # anthropic: rss/news → 404; expand official pages to category listings.
+    # The main /news page only shows the latest ~5 items; category pages like
+    # /news/announcements and /news/features show the full paginated history.
     _news_tools._COMPANY_RSS_FEEDS["anthropic"] = []
+    _news_tools._OFFICIAL_NEWS_PAGES["anthropic"] = [
+        "https://www.anthropic.com/news/announcements",
+        "https://www.anthropic.com/news/features",
+        "https://www.anthropic.com/research",
+        "https://www.anthropic.com/engineering",
+        "https://www.anthropic.com/customers",
+    ]
     # huggingface: not in cmbagent's _COMPANY_RSS_FEEDS so RSS fallback never fires;
     # blog slugs have no date in URL so direct scrape returns all items as undated.
     # Adding the RSS feed here makes scrape_official_news_pages use dated RSS items.
@@ -287,7 +313,7 @@ if _news_tools is not None:
         "https://blogs.oracle.com/cloud-infrastructure",  # 403
         "https://artificialintelligence-news.com",        # 502
         "https://www.amd.com/en/blogs",                   # connection timeout
-        "https://research.ibm.com/quantum",               # replaced by ibm.com/think
+        "https://research.ibm.com/quantum",               # superseded by ibm.com/think (quantum content moved)
     }
     _news_tools._CURATED_AI_NEWS_SOURCES[:] = [
         s for s in _news_tools._CURATED_AI_NEWS_SOURCES
@@ -300,7 +326,7 @@ if _news_tools is not None:
         {"name": "DeepSeek News",       "url": "https://www.deepseek.com/news"},
         {"name": "Stability AI News",   "url": "https://stability.ai/news"},
         {"name": "Cohere Blog",         "url": "https://cohere.com/blog"},
-        {"name": "Perplexity Blog",     "url": "https://www.perplexity.ai/hub/blog"},
+        # perplexity.ai/hub/blog → 403 for all bots; omitted
     ])
 
 # Major AI repos monitored for release notes via the GitHub public API.
@@ -852,22 +878,32 @@ def company_scrape_node(state: NewsCollectionState) -> NewsCollectionState:
 
 # Company name → natural search query (avoids ambiguous single-word searches)
 _COMPANY_DDG_QUERIES: Dict[str, str] = {
-    "openai":       "OpenAI GPT announcement",
-    "anthropic":    "Anthropic Claude AI announcement",
-    "google":       "Google AI Gemini announcement",
-    "meta":         "Meta AI Llama announcement",
-    "microsoft":    "Microsoft AI Copilot Azure announcement",
-    "nvidia":       "NVIDIA AI GPU announcement",
-    "huggingface":  "Hugging Face AI model release",
-    "amazon":       "Amazon AWS AI Bedrock announcement",
-    "deepmind":     "Google DeepMind AI research",
-    "apple":        "Apple AI machine learning announcement",
-    "ibm":          "IBM AI watsonx announcement",
-    "mistral":      "Mistral AI model release",
-    "xai":          "xAI Grok announcement",
-    "deepseek":     "DeepSeek AI model release",
-    "cohere":       "Cohere AI enterprise announcement",
-    "perplexity":   "Perplexity AI search announcement",
+    # ── Core AI labs & model providers ───────────────────────────────────────
+    "openai":          "OpenAI GPT announcement",
+    "anthropic":       "Anthropic Claude AI announcement",
+    "google":          "Google AI Gemini announcement",
+    "meta":            "Meta AI Llama announcement",
+    "microsoft":       "Microsoft AI Copilot Azure announcement",
+    "nvidia":          "NVIDIA AI GPU announcement",
+    "huggingface":     "Hugging Face AI model release",
+    "amazon":          "Amazon AWS AI Bedrock announcement",
+    "deepmind":        "Google DeepMind AI research",
+    "apple":           "Apple AI machine learning announcement",
+    "ibm":             "IBM AI watsonx announcement",
+    "mistral":         "Mistral AI model release",
+    "xai":             "xAI Grok announcement",
+    "deepseek":        "DeepSeek AI model release",
+    "cohere":          "Cohere AI enterprise announcement",
+    "perplexity":      "Perplexity AI search announcement",
+    # ── Quantum computing ────────────────────────────────────────────────────
+    "google_quantum":  "Google Quantum AI computing announcement",
+    "quantinuum":      "Quantinuum quantum computing announcement",
+    "ionq":            "IonQ quantum computing announcement",
+    # ── Robotics ─────────────────────────────────────────────────────────────
+    "bostondynamics":  "Boston Dynamics robot announcement",
+    "figure":          "Figure AI humanoid robot announcement",
+    "agilityrobotics": "Agility Robotics Digit humanoid announcement",
+    "1x":              "1X Technologies NEO humanoid robot announcement",
 }
 
 
@@ -1073,7 +1109,7 @@ def rss_feeds_node(state: NewsCollectionState) -> NewsCollectionState:
     # All endpoints below were verified live (HTTP 200) on 2026-11.
     # cmbagent's own feeds are already RSS endpoints and need no mapping here.
     _KNOWN_FEEDS = {
-        "https://huggingface.co/blog":                   "https://huggingface.co/blog/feed.xml",
+        # huggingface.co/blog → feed.xml is now in _COMPANY_RSS_FEEDS["huggingface"]; no entry needed here
         "https://aws.amazon.com/blogs/aws/":             "https://aws.amazon.com/blogs/aws/feed/",
         "https://blogs.nvidia.com/blog/tag/agentic-ai/": "https://blogs.nvidia.com/blog/tag/agentic-ai/feed/",
         "https://blogs.nvidia.com/blog/tag/inference/":  "https://blogs.nvidia.com/blog/tag/inference/feed/",
@@ -1816,8 +1852,8 @@ def date_validate_node(state: NewsCollectionState) -> NewsCollectionState:
             out_of_range += 1
 
     # Pass 2: fetch article pages for undated items in parallel
-    # Cap at 60 items to avoid excessive network delay; rest are kept as undated
-    MAX_FETCH = 60
+    # Cap at 150 items; 20 workers × ~2s per page ≈ ~15s for the full batch.
+    MAX_FETCH = 150
     to_fetch = [
         item for item in still_undated
         if (item.get("url") or item.get("link") or "").startswith("http")
@@ -1826,13 +1862,13 @@ def date_validate_node(state: NewsCollectionState) -> NewsCollectionState:
     enriched: Dict[str, str] = {}  # url → date string
     if to_fetch:
         print(f"[Collection] Fetching dates for {len(to_fetch)} undated items...")
-        with ThreadPoolExecutor(max_workers=10) as pool:
+        with ThreadPoolExecutor(max_workers=20) as pool:
             futures = {
                 pool.submit(_fetch_article_date, item.get("url") or item.get("link") or ""): item
                 for item in to_fetch
             }
             try:
-                for future in as_completed(futures, timeout=45):
+                for future in as_completed(futures, timeout=90):
                     item = futures[future]
                     url = item.get("url") or item.get("link") or ""
                     try:
