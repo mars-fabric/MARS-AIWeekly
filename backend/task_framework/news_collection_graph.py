@@ -92,6 +92,92 @@ if _news_tools is not None:
         # Drop the 1s inter-source delay — with DDGS auto backend there's no need to
         # rate-limit manually; the 30-source × 7-topic loop adds 210s of wasted sleep.
         _nt_patch._CURATED_SEARCH_INTER_SOURCE_DELAY = 0.1
+
+        # Patch _direct_scrape_page_links to also capture depth-1 article slugs.
+        # The original requires BOTH depth ≥ 2 AND an article path signal (/blog/, /news/,
+        # etc.) — this silently drops top-level slugs like /claude-fable-and-mythos-5-2
+        # or category paths like /features/making-of-claude-code.
+        # Wrapper: run original first, then collect depth-1/no-signal links that look
+        # like article slugs (long, hyphenated) and /features/, /releases/, /updates/ paths.
+        _orig_direct_scrape = getattr(_nt_patch, "_direct_scrape_page_links", None)
+        if _orig_direct_scrape is not None:
+            import re as _re_patch
+            from urllib.request import Request as _Req_patch, urlopen as _open_patch
+            from urllib.parse import urlparse as _up_patch
+            from html import unescape as _ue_patch
+
+            _EXTRA_SIGNALS = re.compile(
+                r"^/(?:features|releases?|updates?|case-studies?|stories|insights|products?)/",
+                re.I,
+            )
+            _DEPTH1_ARTICLE = re.compile(r"^/[a-z0-9][a-z0-9\-]{9,}$", re.I)
+
+            def _patched_direct_scrape(page_url: str, company: str):
+                items = _orig_direct_scrape(page_url, company)
+                seen_urls = {(i.get("url") or "").lower().rstrip("/") for i in items}
+                try:
+                    req = _Req_patch(page_url, headers={
+                        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                                      "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+                        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+                    })
+                    with _open_patch(req, timeout=12) as _r:
+                        _html = _r.read(300_000).decode("utf-8", errors="replace")
+                    _base = _up_patch(page_url)
+                    _base_domain = _base.netloc.lower().replace("www.", "")
+                    _link_re = _re_patch.compile(
+                        r'<a[^>]*\bhref=["\']([^"\'#]+)["\'][^>]*>(.*?)</a>', _re_patch.I | _re_patch.S
+                    )
+                    _NAV_SKIP = re.compile(
+                        r"^/$|/category/|/tag/|/page/\d|/author/|/search|/login|/signup"
+                        r"|/contact|/about$|/privacy|/terms|/sitemap|\.(css|js|png|jpg|svg|ico)$"
+                        r"|/store/|/shop/|/pricing|/download|/install|/products?/|/solutions/"
+                        r"|/services/|/support/|/careers|/jobs|/legal|/compliance"
+                        r"|/account|/settings|/profile|/dashboard|/press-kit",
+                        re.I,
+                    )
+                    for href, title_html in _link_re.findall(_html):
+                        href = href.strip()
+                        if href.startswith("/"):
+                            href = f"{_base.scheme}://{_base.netloc}{href}"
+                        if not href.startswith("http"):
+                            continue
+                        _lp = _up_patch(href)
+                        if _base_domain not in _lp.netloc.lower().replace("www.", ""):
+                            continue
+                        path = _lp.path.lower()
+                        if _NAV_SKIP.search(path):
+                            continue
+                        url_key = href.lower().rstrip("/")
+                        if url_key in seen_urls:
+                            continue
+                        # Only collect links that the original missed:
+                        # depth-1 article slugs OR extra path signals
+                        path_parts = [p for p in path.split("/") if p]
+                        is_extra = (
+                            (len(path_parts) == 1 and _DEPTH1_ARTICLE.match(path))
+                            or _EXTRA_SIGNALS.match(path)
+                        )
+                        if not is_extra:
+                            continue
+                        title = _re_patch.sub(r"<[^>]+>", "", _ue_patch(title_html)).strip()
+                        title = _re_patch.sub(r"\s+", " ", title).strip()
+                        if not title or len(title) < 10 or len(title) > 300:
+                            continue
+                        seen_urls.add(url_key)
+                        items.append({
+                            "title": title,
+                            "url": href,
+                            "source": company,
+                            "published_at": None,
+                            "summary": "",
+                            "engine": "direct_scrape_extended",
+                        })
+                except Exception:
+                    pass
+                return items
+
+            _nt_patch._direct_scrape_page_links = _patched_direct_scrape
     except Exception:
         pass
 
@@ -121,9 +207,9 @@ _SUPPLEMENTARY_RSS_SOURCES: List[str] = [
     "https://blog.google/",
     "https://blog.google/innovation-and-ai/",
 
-    # ── Microsoft: Azure announcements sub-path only ──────────────────────────────────
-    # microsoft.ai/blog/ → 403; blogs.microsoft.com/feed/ → 403 (cmbagent — also dead)
-    "https://azure.microsoft.com/en-us/blog/content-type/announcements/",
+    # ── Microsoft: Azure blog RSS (the /content-type/announcements/ path is a Next.js SPA
+    # that returns zero scrape-able links; use the RSS feed directly instead) ────────────
+    "https://azure.microsoft.com/en-us/blog/feed/",
 
     # ── NVIDIA tag feeds (cmbagent has main blogs.nvidia.com/feed/ only) ─────────────
     "https://blogs.nvidia.com/blog/tag/agentic-ai/",
@@ -131,9 +217,6 @@ _SUPPLEMENTARY_RSS_SOURCES: List[str] = [
 
     # ── AWS general blog (cmbagent only has machine-learning blog feed) ──────────────
     "https://aws.amazon.com/blogs/aws/",
-
-    # ── Hugging Face (in cmbagent's _OFFICIAL_NEWS_PAGES but not _COMPANY_RSS_FEEDS) ─
-    "https://huggingface.co/blog",
 
     # ── Companies not in cmbagent at all ─────────────────────────────────────────────
     "https://cohere.com/blog",
@@ -188,6 +271,12 @@ if _news_tools is not None:
     _news_tools._COMPANY_RSS_FEEDS["bostondynamics"] = []
     # anthropic: rss/news → 404; web-search fallback works better
     _news_tools._COMPANY_RSS_FEEDS["anthropic"] = []
+    # huggingface: not in cmbagent's _COMPANY_RSS_FEEDS so RSS fallback never fires;
+    # blog slugs have no date in URL so direct scrape returns all items as undated.
+    # Adding the RSS feed here makes scrape_official_news_pages use dated RSS items.
+    _news_tools._COMPANY_RSS_FEEDS["huggingface"] = [
+        "https://huggingface.co/blog/feed.xml",
+    ]
 
     # Patch _CURATED_AI_NEWS_SOURCES: remove dead/blocked entries, add missing companies.
     # Verified 2026-11: openai.com/blog → 403, oracle blogs → 403,
@@ -1269,8 +1358,13 @@ def _scrape_page_permissive(page_url: str, label: str) -> List[Dict]:
             continue
 
         path_parts = [p for p in path.split("/") if p]
+        # Allow depth-1 slugs only when they look like article slugs:
+        # long (>8 chars), hyphenated (multi-word), not a plain product/section name.
+        # e.g. /claude-fable-and-mythos-5-2 is an article; /careers is navigation.
         if len(path_parts) < 2:
-            continue
+            slug = path_parts[0] if path_parts else ""
+            if len(slug) < 10 or slug.count("-") < 2:
+                continue
 
         # Strip query/fragment for dedup key
         url_key = f"{link_parsed.scheme}://{link_parsed.netloc}{link_parsed.path}".lower().rstrip("/")
