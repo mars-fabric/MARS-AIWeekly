@@ -118,7 +118,7 @@ def configure_logging(
     handler = logging.StreamHandler(sys.stdout)
     # Terminal shows only warnings/errors (full INFO log still goes to log_file).
     # Override with CONSOLE_LOG_LEVEL=INFO to see everything in the terminal.
-    console_level = getattr(logging, os.getenv("CONSOLE_LOG_LEVEL", "WARNING").upper())
+    console_level = getattr(logging, (os.getenv("CONSOLE_LOG_LEVEL") or "WARNING").upper(), logging.WARNING)
     handler.addFilter(
         lambda r: r.levelno >= console_level or r.name in ("uvicorn.error", "core.app")
     )

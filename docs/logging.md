@@ -36,6 +36,7 @@ Key exports:
 |---|---|---|
 | `CMBAGENT_DEFAULT_WORK_DIR` | `"~/Desktop/cmbdir"` | Root directory for all data |
 | `LOG_LEVEL` | `"INFO"` | Minimum log level |
+| `CONSOLE_LOG_LEVEL` | `"WARNING"` | Minimum level shown in the terminal (log file still gets `LOG_LEVEL`); empty/invalid values fall back to `WARNING` |
 | `LOG_JSON` | `"false"` | JSON-formatted output |
 | `LOG_FILE` | `"{work_dir}/logs/backend.log"` | Backend log file path |
 | `CMBAGENT_DATABASE_URL` | — | Not used (file-based storage) |
@@ -152,6 +153,7 @@ debug: process.env.NEXT_PUBLIC_DEBUG === 'true',
 | `ERROR` | Failures: database errors, execution failures |
 
 Default level is `INFO`. Set `LOG_LEVEL=DEBUG` for verbose output.
+The terminal shows only `WARNING`+ by default; set `CONSOLE_LOG_LEVEL=INFO` to see everything there too.
 
 ---
 
